@@ -70,7 +70,7 @@ and how you drive it.
 |---|---|
 | 🏈 **Sleeper leagues** | Not just ESPN. The same schedule and the same messages for Sleeper, on the same three chat apps - one subscription per league either way |
 | 💬 **Slash commands in Discord** | This repo is a one-way webhook: it posts, and can't be talked to. GameDayBot is a real Discord app. `/league_setup` adds a league, `/league_status` shows what's running, `/message_schedule` prints the week - at every tier. Pro adds `/configure_messages` to turn individual messages on and off, plus `/configure_timezone` and `/configure_close_scores`. No env vars, no redeploy, no server |
-| 🔁 **Trade Announcements** *(Pro)* | Multi-sided deals, draft picks and FAAB included, announced with the next scheduled message |
+| 🔁 **Trade Announcements** *(Pro)* | Multi-sided deals, draft picks and FAAB included, announced with the next scheduled message. Self-hosting includes a daily player-trade report instead |
 | 🔔 **Team @mentions** *(Pro)* | Trophies and reports tag the actual manager, so the winner and the loser both get a notification |
 | 📊 **The Elite analytics pack** | Historical trend charts for power rankings, scores and standings · the Bad Management chart · the Fortune Index · Win Matrix and Trophy Case on a weekly schedule · and an **AI weekly recap** written from your league's actual week |
 
@@ -133,19 +133,59 @@ to `END_DATE`, and the bot goes quiet once the league's matchup periods are over
 | Power Rankings | Tue | 6:30 PM local | Two-step dominance rankings with week-over-week movement |
 | Standings | Wed | 7:30 AM local | Current standings |
 | Waiver Report | Wed | 7:31 AM local | Every add/drop from the day, with FAAB bids and the outbid rival in FAAB leagues |
+| Trade Report | Daily | 7:35 AM local | Previous calendar day's completed player trades, showing the sending and receiving teams; silent on quiet days |
 | Matchups + projections | Thu | 7:30 PM ET | Next week's matchups with records |
 
 Optional: `DAILY_WAIVER` moves the Waiver Report to a daily send, and `MONITOR_REPORT`
 (on by default) controls the Sunday Players to Monitor message.
+
+`TRADE_REPORT` (on by default) controls the daily trade report. It uses `TIMEZONE`
+for the entire previous calendar day, including evening trades, and pages through
+ESPN's trade activity so busy days aren't limited to the latest 25 events.
+It reports completed player trades, not proposals, vetoes, draft picks, or FAAB.
+Update dependencies when upgrading: this feature requires `espn_api>=0.46.0`.
+The process must be running at the scheduled time; missed days are not replayed
+automatically. For a manual historical report, call
+`gamedaybot.espn.trades.get_trade_report(league, report_date=date(2026, 9, 20))`
+with a `datetime.date` and your ESPN league object.
 
 The managed schedule - including the daily Waiver Report and the Elite chart messages -
 is at [gamedaybot.com/message-schedule](https://www.gamedaybot.com/message-schedule/).
 
 ## What the messages look like
 
-Same text goes to every chat app you've configured; only the wrapping differs (Discord
-turns the first line into an embed title, Slack wraps the message in a code block,
-GroupMe sends it as-is).
+Discord displays reports as colored cards with recognizable titles: teal trades,
+gold awards, orange lineup alerts, and blue scoreboards. Trade recipients and award
+headings are emphasized, while numeric tables retain aligned columns. Scores,
+projections, and trophies get separate cards within the same message when they fit.
+Long reports continue across cards without dropping entries. Slack and GroupMe
+receive the same underlying report in their existing text format.
+
+### Local AI recaps with LM Studio / Bionic
+
+Run LM Studio's local server and load a chat model. Set `AI_MODEL` to its exact
+identifier from `GET http://localhost:1234/v1/models`. `AI_BASE_URL` defaults to
+`http://localhost:1234/v1` when running the bot on the host. The Minikube deployment
+uses `http://host.docker.internal:1234/v1`, verified for this Docker Desktop setup;
+localhost inside a pod would point at the pod itself.
+
+The bot appends short local analysis to scheduled reports using the exact ESPN
+report just generated. Discord displays a purple AI analysis card. There is no
+OpenAI service integration, API key requirement, or paid-provider fallback.
+`AI_ANALYSIS=False` disables commentary. Keep LM Studio and its server running.
+
+For stability, requests disable reasoning, limit output to 400 tokens, use a low
+temperature (0.3), and admit only one generation at a time within the bot process.
+The Qwen setup uses one inference slot; request an 8K context where supported. Reports over 12,000
+characters skip analysis rather than overflowing the context. A busy model,
+timeout, incomplete answer, or malformed response leaves the normal report intact.
+Requests have a 5-second connection timeout and 60-second read timeout, with no
+retries. Reasoning content is never published.
+
+Analysis only sees report text, including team/player names. It has no additional
+news, roster history, or browsing and may still make mistakes. The report remains
+the source of truth. Model requests use LM Studio's
+[local Chat Completions API](https://lmstudio.ai/docs/developer/openai-compat/chat-completions).
 
 <details>
 <summary><b>Trophies</b> - the weekly awards, sent Tuesday with final scores</summary>
@@ -402,6 +442,10 @@ the rest have defaults.
 | `ESPN_S2` | Private leagues | - | ESPN cookie |
 | `SWID` | Private leagues | - | ESPN cookie |
 | `MONITOR_REPORT` | No | `True` | Sunday morning Players to Monitor message |
+| `TRADE_REPORT` | No | `True` | Daily completed player-trade report at 7:35 AM local, covering yesterday |
+| `AI_BASE_URL` | No | `http://localhost:1234/v1` | Local LM Studio server; use the host address from Minikube |
+| `AI_ANALYSIS` | No | `True` | Set to `False` to disable local commentary |
+| `AI_MODEL` | For AI analysis | Unset | Exact local chat model identifier; unset disables generation |
 | `DAILY_WAIVER` | No | `False` | Send the Waiver Report daily rather than only on Wednesday |
 | `CLOSE_SCORES_THRESHOLD` | No | `15` | Largest projected point gap that still counts as a close matchup. Lower it for fewer, tighter games. A value that isn't a whole number is ignored |
 | `INIT_MSG` | No | - | Message posted on startup. Leave unset for a silent start - the process restarts more often than you'd think |
@@ -513,7 +557,7 @@ python3 -c "from gamedaybot.espn.espn_bot import espn_bot; espn_bot('get_standin
 
 Valid names: `get_scoreboard_short`, `get_projected_scoreboard`, `get_matchups`,
 `get_monitor`, `get_close_scores`, `get_power_rankings`, `get_trophies`, `get_standings`,
-`get_final`, `get_waiver_report`, `win_matrix`, `trophy_recap`, `init`.
+`get_final`, `get_waiver_report`, `get_trade_report`, `win_matrix`, `trophy_recap`, `init`.
 
 `win_matrix` (how the standings would look if everyone played everyone) and
 `trophy_recap` (season-long trophy tally) aren't on the schedule - they're on-demand
@@ -611,3 +655,9 @@ Starring the repo helps too.
 ## License
 
 [GPL-3.0](LICENSE).
+
+## Interactive Discord commands
+
+Use `/matchup`, `/standings`, and `/recap` alongside scheduled webhook reports.
+See [Discord application setup](deployment/DISCORD.md) for installation and the
+local token setup script. Replies are private unless `share:true` is selected.

@@ -137,3 +137,14 @@ gamedaybot/ids.txt
 *.sh
 *.ipynb
 .DS_STORE
+/data/*.sqlite*
+/data/model-benchmark/
+
+# Local credentials, league data, and generated previews
+.env.*
+!.env.example
+/deployment/secrets.env
+/deployment/*.local.yaml
+/data/
+/tmp/
+/league-personality.json

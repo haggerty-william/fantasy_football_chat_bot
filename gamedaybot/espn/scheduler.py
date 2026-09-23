@@ -1,6 +1,7 @@
 from apscheduler.schedulers.blocking import BlockingScheduler
 from gamedaybot.espn.espn_bot import espn_bot
 from gamedaybot.espn.env_vars import get_env_vars
+from datetime import datetime, timezone
 
 
 def scheduler():
@@ -45,6 +46,11 @@ def scheduler():
                   day_of_week='wed', hour=7, minute=30, start_date=ff_start_date, end_date=ff_end_date,
                   timezone=my_timezone, replace_existing=True)
     waiver_days = '*' if data['daily_waiver'] else 'wed'
+    if data['trade_report']:
+        sched.add_job(espn_bot, 'cron', ['get_trade_updates'], id='trade_report',
+                      minute=0, next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True,
+                      timezone=my_timezone, replace_existing=True)
+
     sched.add_job(espn_bot, 'cron', ['get_waiver_report'], id='waiver_report',
                   day_of_week=waiver_days, hour=7, minute=31, start_date=ff_start_date, end_date=ff_end_date,
                   timezone=my_timezone, replace_existing=True)
@@ -65,5 +71,11 @@ def scheduler():
                   day_of_week='sun', hour='16,20', start_date=ff_start_date, end_date=ff_end_date,
                   timezone=game_timezone, replace_existing=True)
 
+    sched.add_job(espn_bot, 'cron', ['get_trade_followups'], id='trade_followups',
+                  day_of_week='tue', hour=18, minute=35, start_date=ff_start_date, end_date=ff_end_date,
+                  timezone=my_timezone, max_instances=1, coalesce=True, replace_existing=True)
+    sched.add_job(espn_bot, 'cron', ['get_pickem_results'], id='pickem_results',
+                  day_of_week='tue', hour=18, minute=40, start_date=ff_start_date, end_date=ff_end_date,
+                  timezone=my_timezone, max_instances=1, coalesce=True, replace_existing=True)
     print("Ready!")
     sched.start()

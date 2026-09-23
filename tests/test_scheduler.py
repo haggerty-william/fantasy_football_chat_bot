@@ -18,6 +18,7 @@ def jobs(monkeypatch):
     """
     monkeypatch.setenv('LEAGUE_ID', '1234567')
     monkeypatch.setenv('BOT_ID', 'x' * 20)
+    monkeypatch.delenv('TRADE_REPORT', raising=False)
     monkeypatch.setattr(BlockingScheduler, 'start', lambda self, *a, **kw: None)
 
     built = {}
@@ -85,12 +86,25 @@ class TestScheduleShape:
         monkeypatch.delenv('MONITOR_REPORT', raising=False)
         assert set(jobs()) == {
             'close_scores', 'power_rankings', 'final', 'standings',
-            'waiver_report', 'matchups', 'scoreboard1', 'monitor', 'scoreboard2',
+            'waiver_report', 'trade_report', 'matchups', 'scoreboard1', 'monitor', 'scoreboard2', 'trade_followups', 'pickem_results',
         }
 
     def test_monitor_report_can_be_disabled(self, jobs, monkeypatch):
         monkeypatch.setenv('MONITOR_REPORT', 'False')
         assert 'monitor' not in jobs()
+
+    def test_trade_report_runs_hourly_in_local_timezone(self, jobs, monkeypatch):
+        monkeypatch.setenv('TIMEZONE', 'America/Los_Angeles')
+        job = jobs()['trade_report']
+        assert day_of_week(job) == '*'
+        assert str(job.trigger.timezone) == 'America/Los_Angeles'
+        assert job.args == ('get_trade_updates',)
+        fields = {field.name: str(field) for field in job.trigger.fields}
+        assert (fields['hour'], fields['minute']) == ('*', '0')
+
+    def test_trade_report_can_be_disabled(self, jobs, monkeypatch):
+        monkeypatch.setenv('TRADE_REPORT', 'False')
+        assert 'trade_report' not in jobs()
 
     @pytest.mark.parametrize('job_id,expected_day', [
         ('close_scores', 'mon'),

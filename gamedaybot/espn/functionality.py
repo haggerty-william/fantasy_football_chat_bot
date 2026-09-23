@@ -166,9 +166,15 @@ def get_standings(league):
     standings = league.standings()
     # Records are padded to a common width so the team names all start in the
     # same column, whatever mix of 1- and 2-digit win/loss counts the league has.
-    records = util.align_records([f"{team.wins}-{team.losses}" for team in standings])
-    standings_txt = [f"{pos + 1:2}: ({record}) {team.team_name} " for
-                     pos, (team, record) in enumerate(zip(standings, records))]
+    records = util.align_records([f"{team.wins}-{team.losses}-{getattr(team, 'ties', 0)}" for team in standings])
+    leader = standings[0] if standings else None
+    standings_txt = []
+    for pos, (team, record) in enumerate(zip(standings, records)):
+        ties = getattr(team, 'ties', 0)
+        played = team.wins + team.losses + ties
+        win_pct = 100 * (team.wins + ties / 2) / played if played else 0
+        games_back = ((leader.wins - leader.losses) - (team.wins - team.losses)) / 2
+        standings_txt.append(f"{pos + 1:2}: ({record}) {team.team_name} | Win% {win_pct:.1f}% | GB {games_back:g}")
     text = ["Current Standings"] + standings_txt
 
     return "\n".join(text)

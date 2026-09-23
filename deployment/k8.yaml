@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fantasy-football-bot
+  labels:
+    app: fantasy-football-bot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fantasy-football-bot
+  template:
+    metadata:
+      labels:
+        app: fantasy-football-bot
+    spec:
+      volumes:
+        - name: trade-state
+          persistentVolumeClaim:
+            claimName: fantasy-football-trade-state
+      containers:
+      - name: bot-container
+        # Use the local image name you tagged during your docker build step
+        image: YOUR_LOCAL_DOCKER_IMAGE_NAME:latest
+        # Crucial for Minikube so it looks for your local image instead of pulling from Docker Hub
+        imagePullPolicy: Never
+        volumeMounts:
+          - name: trade-state
+            mountPath: /var/lib/gamedaybot
+        envFrom:
+          - secretRef:
+              name: fantasy-football-discord-app
+              optional: true
+        env:
+        - name: TRADE_STATE_PATH
+          value: /var/lib/gamedaybot/trades.sqlite3
+        - name: AI_BASE_URL
+          value: "http://host.docker.internal:1234/v1"
+        - name: AI_MODEL
+          value: "google/gemma-4-12b-qat"
+        - name: AI_REQUEST_TIMEOUT_SECONDS
+          value: "600"
+        - name: AI_ANALYSIS_TIMEOUT_SECONDS
+          value: "600"
+        - name: AI_ANALYSIS
+          value: "True"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: LEAGUE_ID
+          value: "12345678"
+        - name: DISCORD_WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: fantasy-football-private-env
+              key: DISCORD_WEBHOOK_URL
+        # Optional: Leave as empty strings ("") if your ESPN league is entirely public
+        - name: ESPN_S2
+          valueFrom:
+            secretKeyRef:
+              name: fantasy-football-private-env
+              key: ESPN_S2
+        - name: SWID
+          valueFrom:
+            secretKeyRef:
+              name: fantasy-football-private-env
+              key: SWID

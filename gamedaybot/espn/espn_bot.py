@@ -16,6 +16,10 @@ else:
     from gamedaybot.espn.env_vars import get_env_vars
     import gamedaybot.espn.functionality as espn
     import gamedaybot.espn.season_recap as recap
+    from gamedaybot.espn.trades import get_trade_report
+    from gamedaybot.espn.analysis import generate_analysis
+    from gamedaybot.chat.discord_format import TeamReport
+    from gamedaybot.espn.trade_notifications import poll_trades
 
 
 from espn_api.football import League
@@ -142,6 +146,31 @@ def espn_bot(function):
     else:
         league = League(league_id=league_id, year=year, espn_s2=espn_s2, swid=swid)
 
+    if function == 'get_trade_followups':
+        from gamedaybot.espn.trade_followups import followups
+        from gamedaybot.espn.community_state import scope, reserve, state
+        key = scope(league)
+        with state() as db:
+            known = {r[0] for r in db.execute('SELECT key FROM notices WHERE scope=?',(key,))}
+        reports = [(tid, text) for tid,text in followups(league) if 'followup:'+tid not in known][:3]
+        texts = [text for tid,text in reports if reserve(key,'followup:'+tid)]
+        if texts:
+            discord_bot.teams = league.teams
+            discord_bot.send_message('\n\n'.join(texts))
+        return
+    if function == 'get_pickem_results':
+        from gamedaybot.espn.community import pickem
+        from gamedaybot.espn.community_state import scope, state, reserve
+        with state() as db:
+            active = db.execute('SELECT 1 FROM picks WHERE scope=? LIMIT 1',(scope(league),)).fetchone()
+        if active and reserve(scope(league),f'pickem-results:{league.scoringPeriodId}'):
+            text = pickem(league, [], 'leaderboard', '', None)
+            discord_bot.send_message(text)
+        return
+    if function == 'get_trade_updates':
+        poll_trades(league, data, discord_bot)
+        return
+
     try:
         broadcast_message = data['broadcast_message']
     except KeyError:
@@ -155,11 +184,14 @@ def espn_bot(function):
     text = ''
     logger.info("Function: " + function)
 
+    from gamedaybot.espn import community
+
     if function == "get_matchups":
         box_scores = espn.fetch_box_scores(league)
         text = espn.get_matchups(league, box_scores=box_scores)
         if text != util.NO_MATCHUP_DATA:
             text = text + "\n\n" + espn.get_projected_scoreboard(league, box_scores=box_scores)
+        text += "\n\n" + community.preview(league, box_scores)
     elif function == "get_monitor":
         text = espn.get_monitor(league)
     elif function == "get_scoreboard_short":
@@ -170,13 +202,13 @@ def espn_bot(function):
     elif function == "get_projected_scoreboard":
         text = espn.get_projected_scoreboard(league)
     elif function == "get_close_scores":
-        text = espn.get_close_scores(league, threshold=close_scores_threshold)
+        text = community.monday_watch(league, espn.fetch_box_scores(league), community.nfl_games(league))
     elif function == "get_power_rankings":
         text = espn.get_power_rankings(league)
     elif function == "get_trophies":
         text = espn.get_trophies(league)
     elif function == "get_standings":
-        text = espn.get_standings(league)
+        text = espn.get_standings(league) + "\n\n" + community.playoff_picture(league, compact=True)
     elif function == "win_matrix":
         text = recap.win_matrix(league)
     elif function == "trophy_recap":
@@ -193,10 +225,12 @@ def espn_bot(function):
             text = scores
         else:
             text = "Final " + scores
-            text = text + "\n\n" + espn.get_trophies(league, week=week, box_scores=box_scores)
+            text = text + "\n\n" + community.awards(league, box_scores, week)
     elif function == "get_waiver_report":
         faab = league.settings.faab
         text = espn.get_waiver_report(league, faab)
+    elif function == "get_trade_report":
+        text = get_trade_report(league, timezone=data['my_timezone'])
     elif function == "broadcast":
         try:
             text = broadcast_message
@@ -212,18 +246,31 @@ def espn_bot(function):
     else:
         text = "Something bad happened. HALP"
 
-    logger.debug(data)
     if util.has_sendable_content(text):
+        report_week = league.current_week - 1 if function == 'get_final' else getattr(league, 'current_week', None)
+        analysis = generate_analysis(text, function, timezone=data['my_timezone'], week=report_week,
+                                     league=league, box_scores=locals().get('box_scores'))
+        if analysis:
+            text += '\n\n' + analysis
         logger.debug(text)
         messages = util.str_limit_check(text, str_limit)
         for message in messages:
             groupme_bot.send_message(message)
             slack_bot.send_message(message)
-            discord_bot.send_message(message)
+        # Discord formats and paginates the complete report as rich embeds.
+        discord_bot.teams = getattr(league, 'teams', [])
+        if function in ('get_matchups', 'get_scoreboard_short', 'get_final'):
+            text = TeamReport(text, discord_bot.teams, matchups=box_scores,
+                              final_scores=function == 'get_final', week=report_week)
+        discord_bot.send_message(text)
 
 
 if __name__ == '__main__':
     from gamedaybot.espn.scheduler import scheduler
+    from gamedaybot.chat.interactions import start_interactions
+    from gamedaybot.espn.model_readiness import start_model_keeper
 
+    start_interactions()
+    start_model_keeper()
     espn_bot("init")
     scheduler()

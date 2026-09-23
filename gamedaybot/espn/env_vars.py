@@ -3,7 +3,7 @@ import gamedaybot.espn.functionality as espn
 import gamedaybot.utils.util as utils
 
 
-def get_env_vars():
+def get_env_vars(require_chat=True):
     data = {}
     try:
         ff_start_date = os.environ["START_DATE"]
@@ -32,6 +32,7 @@ def get_env_vars():
         daily_waiver = False
 
     data['daily_waiver'] = daily_waiver
+    data['trade_report'] = utils.str_to_bool(os.environ.get('TRADE_REPORT', 'True'))
 
     try:
         monitor_report = utils.str_to_bool(os.environ["MONITOR_REPORT"])
@@ -65,11 +66,11 @@ def get_env_vars():
 
     try:
         discord_webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
-        str_limit = 3000
+        str_limit = min(str_limit, 1994)  # Discord's 2000 minus six code-fence characters
     except KeyError:
         discord_webhook_url = 1
 
-    if (len(str(bot_id)) <= 1 and
+    if (require_chat and len(str(bot_id)) <= 1 and
         len(str(slack_webhook_url)) <= 1 and
             len(str(discord_webhook_url)) <= 1):
         # Ensure that there's info for at least one messaging platform,

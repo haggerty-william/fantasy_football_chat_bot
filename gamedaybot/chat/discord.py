@@ -1,6 +1,8 @@
 import requests
 import json
 import logging
+from .discord_format import build_payloads
+from .discord_images import prepare_payloads
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,7 @@ class Discord(object):
 
     def __init__(self, webhook_url):
         self.webhook_url = webhook_url
+        self.teams = None
 
     def __repr__(self):
         return "Discord Webhook Url(%s)" % self.webhook_url
@@ -55,20 +58,19 @@ class Discord(object):
             If there is an error with the POST request.
         """
 
-        message = "```{0}```".format(text)
-        template = {
-            "content": message  # limit 3000 chars
-        }
-
         headers = {'content-type': 'application/json'}
 
-        if self.webhook_url not in (1, "1", ''):
-            r = requests.post(self.webhook_url,
-                              data=json.dumps(template), headers=headers)
-
-            if r.status_code != 204:
-                print(r.content)
+        if self.webhook_url in (1, "1", '') or not text or not text.strip():
+            return None
+        for template, files in prepare_payloads(text, teams=self.teams):
+            if files:
+                r = requests.post(self.webhook_url, data={'payload_json': json.dumps(template)},
+                                  files={f'files[{i}]': (name, data, 'image/png') for i, (name, data) in enumerate(files)},
+                                  timeout=30)
+            else:
+                r = requests.post(self.webhook_url,
+                                  data=json.dumps(template), headers=headers, timeout=30)
+            if r.status_code not in (200, 204):
                 logger.error(r.content)
                 raise DiscordException(r.content)
-
-            return r
+        return r
