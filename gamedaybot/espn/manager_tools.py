@@ -72,7 +72,9 @@ def schedule_luck(researcher):
         return {'error': 'Schedule luck requires verified single-week matchup periods.'}
     totals = {str(t.team_id): {'team_id': str(t.team_id), 'team': t.team_name,
               'weeks': 0, 'all_play_wins': 0, 'all_play_ties': 0, 'all_play_losses': 0,
-              'actual_win_equivalents': 0, 'expected_win_equivalents': 0} for t in league.teams}
+              'actual_win_equivalents': 0, 'expected_win_equivalents': 0,
+              'points_for': 0, 'points_against': 0, 'league_average_total': 0,
+              'recent_games': []} for t in league.teams}
     omitted = []
     for week in range(1, end_week(researcher) + 1):
         index = week - 1
@@ -96,13 +98,43 @@ def schedule_luck(researcher):
             row['all_play_losses'] += len(others) - wins - ties
             row['actual_win_equivalents'] += 1 if score > opponent.scores[index] else .5 if score == opponent.scores[index] else 0
             row['expected_win_equivalents'] += (wins + .5 * ties) / len(others)
+            league_average = sum(t.scores[index] for t in league.teams) / len(league.teams)
+            row['points_for'] += score
+            row['points_against'] += opponent.scores[index]
+            row['league_average_total'] += league_average
+            row['recent_games'].append({'week': week, 'points': score,
+                'opponent': opponent.team_name, 'opponent_points': opponent.scores[index],
+                'margin': round(score - opponent.scores[index], 2),
+                'points_vs_league_average': round(score - league_average, 2),
+                'scoring_rank': 1 + sum(s > score for s in others)})
     for row in totals.values():
         row['schedule_luck_wins'] = round(row['actual_win_equivalents'] - row['expected_win_equivalents'], 2)
         games = row['all_play_wins'] + row['all_play_ties'] + row['all_play_losses']
         row['all_play_win_pct'] = round(100 * (row['all_play_wins'] + .5 * row['all_play_ties']) / games, 1) if games else None
         row['expected_win_equivalents'] = round(row['expected_win_equivalents'], 2)
+        weeks = row['weeks']
+        row['points_per_game'] = round(row['points_for'] / weeks, 2) if weeks else None
+        row['opponent_points_per_game'] = round(row['points_against'] / weeks, 2) if weeks else None
+        row['average_margin'] = round((row['points_for'] - row['points_against']) / weeks, 2) if weeks else None
+        league_average_total = row.pop('league_average_total')
+        row['points_per_game_vs_league_average'] = round((row['points_for'] - league_average_total) / weeks, 2) if weeks else None
+        row['points_for'] = round(row['points_for'], 2)
+        row['points_against'] = round(row['points_against'], 2)
+        row['recent_games'] = row['recent_games'][-3:]
+    for row in totals.values():
+        row['points_per_game_rank'] = (1 + sum(other['points_per_game'] is not None and
+            other['points_per_game'] > row['points_per_game'] for other in totals.values())) if row['weeks'] else None
     return {'through_week': end_week(researcher), 'teams': list(totals.values()), 'omitted_weeks': omitted,
-            'limitations': 'Descriptive schedule luck, not a forecast or measure of skill. Ties count half. Byes excluded; median bonus wins and commissioner-adjusted outcomes are not included.'}
+            'metric_definitions': {
+                'points_per_game': 'Team scoring average over its covered completed matchup weeks, not a single-week score.',
+                'opponent_points_per_game': 'Scoring average of the actual scheduled opponents in those weeks.',
+                'average_margin': 'Average score margin against actual scheduled opponents: team points minus opponent points per covered game. Use this for claims about outscoring opponents by X points per game.',
+                'points_per_game_vs_league_average': 'Team scoring average minus the league-wide scoring average in its covered weeks. This is NOT the margin against scheduled opponents; say above/below the league average.',
+                'points_per_game_rank': 'Cumulative rank by scoring average across covered completed weeks through the cutoff. This is NOT a weekly scoring rank or the standings seed.',
+                'recent_games.scoring_rank': 'League scoring rank for this row\'s explicit week only. Use the matching week row for claims such as ranked fifth in Week 1.',
+                'recent_games.margin': 'Score margin against the actual scheduled opponent in this row\'s week only.',
+                'recent_games.points_vs_league_average': 'Score minus that week\'s league-wide average, not the score margin against the scheduled opponent.'},
+            'limitations': 'Completed weeks only. Scoring averages/ranks and score-derived head-to-head wins cover the same non-bye samples; missing league scores omit the whole week. Descriptive schedule luck, not a forecast or measure of skill. Positive luck is actual score-derived wins minus all-play expected wins. Ties count half. Byes excluded; median bonus wins and commissioner-adjusted outcomes are not included. Small samples cannot establish sustainable team strength.'}
 
 
 def optimal_actual(roster, slots, week):

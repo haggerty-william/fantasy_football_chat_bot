@@ -174,17 +174,30 @@ report just generated. Discord displays a purple AI analysis card. There is no
 OpenAI service integration, API key requirement, or paid-provider fallback.
 `AI_ANALYSIS=False` disables commentary. Keep LM Studio and its server running.
 
-For stability, requests disable reasoning, limit output to 400 tokens, use a low
+Commentary adds one or two supported explanations or implications instead of
+reading the table back to the channel. Standings and power rankings receive
+completed scoring, opponent scoring and all-play schedule-luck comparisons by
+default. Other reports focus on swing factors, lineup decisions, role changes or
+roster impact. Jokes should follow the football evidence. Obvious table narration
+and stock filler trigger one rewrite; if no useful insight survives, the bot keeps
+the report and omits the extra commentary. Current playoff position is not a
+confirmed clinch or elimination.
+
+For stability, requests disable reasoning, limit output to 1,400 tokens, use a low
 temperature (0.3), and admit only one generation at a time within the bot process.
-The Qwen setup uses one inference slot; request an 8K context where supported. Reports over 12,000
+The Minikube setup uses Gemma with a 32K context. Reports over 12,000
 characters skip analysis rather than overflowing the context. A busy model,
 timeout, incomplete answer, or malformed response leaves the normal report intact.
-Requests have a 5-second connection timeout and 60-second read timeout, with no
-retries. Reasoning content is never published.
+Requests have a 5-second connection timeout and share a configurable total budget
+of up to 600 seconds for research, generation and one correction. Reasoning content
+is never published.
 
-Analysis only sees report text, including team/player names. It has no additional
-news, roster history, or browsing and may still make mistakes. The report remains
-the source of truth. Model requests use LM Studio's
+Analysis receives a structured team/manager directory, report, roster and scoring
+evidence, dated news highlights and bounded research tools. The bot executes those
+tools; the model does not browse arbitrary websites. Missing evidence stays unknown,
+and commentary can still make mistakes. The report remains the source of truth.
+See [the Discord guide](deployment/DISCORD.md) for the tools and settings.
+Model requests use LM Studio's
 [local Chat Completions API](https://lmstudio.ai/docs/developer/openai-compat/chat-completions).
 
 <details>

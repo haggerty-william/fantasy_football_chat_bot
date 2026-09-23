@@ -70,7 +70,7 @@ def trends(player, week, period):
             'projection_samples':len(differences),'zero_without_participation_excluded':True}
 
 
-def history(league, teams, week):
+def history(league, teams, week, include_performance=False):
     period=getattr(league,'scoringPeriodId',week)
     periods=getattr(getattr(league,'settings',None),'matchup_periods',{})
     items=[]
@@ -98,7 +98,27 @@ def history(league, teams, week):
             streak.append(result)
         items.append({'team':team.team_name,'completed_record':{k:completed.count(k) for k in ('W','L','T')},
                       'streak':{'result':streak[0] if streak else None,'length':len(streak)}})
-    return {'scope':'This season; completed matchup periods through report week', 'teams':items,'meetings':meetings[-8:]}
+    result = {'scope':'This season; completed matchup periods through report week', 'teams':items,'meetings':meetings[-8:]}
+    if include_performance and isinstance(week, int) and isinstance(period, int):
+        # These already-loaded scores explain standings even when the model
+        # skips optional research tools. Compare against the entire league,
+        # then keep each team's evidence in its canonical history record.
+        from types import SimpleNamespace
+        from gamedaybot.espn.manager_tools import schedule_luck
+        regular = getattr(getattr(league, 'settings', None), 'reg_season_count', week)
+        through = min(week, regular) if isinstance(regular, int) else week
+        try:
+            performance = schedule_luck(SimpleNamespace(league=league, week=through))
+        except (AttributeError, TypeError, ValueError):
+            performance = {'error': 'Completed scoring comparisons unavailable.'}
+        result['performance_context'] = {k: v for k, v in performance.items() if k != 'teams'}
+        by_name = {row['team']: row for row in performance.get('teams', [])}
+        for row in items:
+            if row['team'] in by_name:
+                data = by_name[row['team']]
+                row['performance'] = ({k: v for k, v in data.items() if k not in ('team', 'team_id')}
+                                      if data['weeks'] else {'status': 'No verified completed matchup samples.'})
+    return result
 
 
 def recent_trade_history(league, team_ids, week):

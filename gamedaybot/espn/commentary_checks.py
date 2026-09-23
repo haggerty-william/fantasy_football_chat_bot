@@ -52,9 +52,70 @@ def _trade_subjects(context):
             for team,aliases in subjects.items()}
 
 
+def _team_names(context):
+    names = {t['name'] for t in context.get('fantasy_teams', [])}
+    names.update(r['team'] for r in context.get('rosters', []))
+    names.update(t['team'] for t in context.get('league_history', {}).get('teams', []))
+    return {name.replace('\u2019', "'") for name in names}
+
+
+def _sentences(text, team_names):
+    """Punctuation belonging to a supplied team name is not a sentence end."""
+    pattern = (r'(?<!\w)(?:' + '|'.join(re.escape(n) for n in sorted(team_names, key=len, reverse=True))
+               + r')(?!\w)') if team_names else None
+    spans = [m.span() for m in re.finditer(pattern, text, re.I)] if pattern else []
+    start = 0
+    for boundary in re.finditer(r'(?<=[.!?])\s+|\n+', text):
+        if '\n' not in boundary.group() and any(a <= boundary.start() - 1 < b for a, b in spans):
+            continue
+        yield text[start:boundary.start()]
+        start = boundary.end()
+    yield text[start:]
+
+
+def _unsupported_playoff_claim(sentence, report, context):
+    """Current seeds and a method-note are not confirmed playoff outcomes."""
+    pattern = (r'\b(?P<clinch>clinched|guaranteed (?:a )?playoff (?:spot|place|berth))\b|'
+               r'\b(?P<elimination>eliminated|outside (?:the )?mathematical bounds|'
+               r'out of playoff contention|(?:cannot|can\'t) make (?:the )?playoffs|'
+               r'no (?:mathematical )?(?:chance|path) (?:of|to) (?:making |reaching )?(?:the )?playoffs)\b')
+    names = _team_names(context)
+    report = report.replace('\u2019', "'")
+    previous_claim_end = 0
+    for match in re.finditer(pattern, sentence, re.I):
+        # Keep an intervening comma aside with its subject. A previous playoff
+        # assertion starts a new clause, so its team cannot validate this one.
+        prefix = re.split(r';|\b(?:but|while|whereas)\b',
+                          sentence[previous_claim_end:match.start()], flags=re.I)[-1]
+        previous_claim_end = match.end()
+        # A comma may separate independent clauses, rather than an aside or
+        # a list of joint subjects. Do not inherit another clause's "might".
+        for comma in reversed(list(re.finditer(',', prefix))):
+            before, after = prefix[:comma.start()], prefix[comma.end():]
+            if (re.search(r'\b(?:has|have|is|are|was|were|could|might|would|may|will|won|lost)\b', before, re.I)
+                    and any(re.search(r'(?<!\w)' + re.escape(n) + r'(?!\w)', after, re.I) for n in names)):
+                prefix = after
+                break
+        if re.search(r"\b(?:no one|nobody|none|not|never|hasn't|haven't|isn't|aren't)\s+"
+                     r'(?:(?:has|have|is|are|been|yet|already|mathematically)\s+)*$', prefix, re.I):
+            continue
+        if re.search(r'\b(?:if|could|might|would|may)\b', prefix, re.I):
+            continue
+        status = 'Clinched' if match.group('clinch') else 'Eliminated'
+        subjects = [n for n in names if re.search(r'(?<!\w)' + re.escape(n) + r'(?!\w)', prefix, re.I)]
+        # Only the report generator's explicit per-team record-bound status is
+        # authoritative. Another team's status cannot validate this assertion.
+        if not subjects or any(not re.search(
+                r'^' + re.escape(name) + r': #[0-9]+ \| ' + status + r' by record bound\s*$',
+                report, re.I | re.M) for name in subjects):
+            return True
+    return False
+
+
 def check_commentary(text, report, context):
     if not context: return []  # Legacy report-only calls retain their existing behavior.
-    problems=[]
+    from gamedaybot.espn.team_performance_checks import check_team_performance
+    problems=check_team_performance(text, context)
     corpus=report+'\n'+json.dumps(context,ensure_ascii=False)
     clean=re.sub(r'\[(?:F|N)\d+\]','',text).replace('\u2019', "'").replace('**','')
     if _numbers(clean)-_numbers(corpus): problems.append('unsupported_number')
@@ -67,7 +128,7 @@ def check_commentary(text, report, context):
             continue
         if subject.split()[0] not in ('The','This','That','Your','Their','Our','Both','If','Meanwhile') and subject.casefold() not in corpus.casefold():
             problems.append('unsupported_named_subject')
-    sentences=re.split(r'(?<=[.!?])\s+|\n+',clean)
+    sentences=_sentences(clean, _team_names(context))
     for sentence in sentences:
         lower=sentence.casefold()
         mentioned=[]
@@ -128,11 +189,8 @@ def check_commentary(text, report, context):
                     if team==e.get('fantasy_team'): continue
                     if re.search(re.escape(team)+r"(?:'s)?\s+(?:QB|RB|WR|TE|player|starter)\s+"+subject,sentence,re.I):
                         problems.append('ownership_mismatch')
-        if not re.search(r'\b(clinched|eliminated)\b',report,re.I):
-            for claim in re.finditer(r'\b(clinched|eliminated)\b',lower):
-                prefix=lower[:claim.start()]
-                negated=re.search(r"\b(?:no one|nobody|none|not|never|hasn't|haven't|isn't|aren't)\s+(?:(?:has|have|is|are|been|yet|already)\s+)*$",prefix)
-                if not negated: problems.append('unsupported_playoff_claim')
+        if _unsupported_playoff_claim(sentence, report, context):
+            problems.append('unsupported_playoff_claim')
     # Match before sentence splitting: the period in "Alex M." is not a sentence end.
     subjects=_trade_subjects(context)
     next_subject=r'\band\s+(?:'+'|'.join(subjects.values())+r')\s+(?:received|receives|gets|got|acquired|acquires|sent|sends|gave up|gives up|traded away)\b'

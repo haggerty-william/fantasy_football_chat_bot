@@ -89,7 +89,8 @@ def command_report(command, team=None, week=None, days=7, user=None, name=None, 
                                                     for trade in recent for a in trade['actions']])
         if len(trades) > 5:
             text += f'\n\nShowing the latest 5 of {len(trades)} trades in this window.'
-        text += '\n\n' + (analysis or 'The local analyst is unavailable; completed trades are shown above.')
+        if analysis:
+            text += '\n\n' + analysis
     elif command == 'standings':
         from gamedaybot.espn.community import playoff_picture
         text = espn.get_standings(league) + '\n\n' + playoff_picture(league, compact=True)
@@ -146,7 +147,8 @@ def command_report(command, team=None, week=None, days=7, user=None, name=None, 
         text = f'Week {week} · {"Completed" if finished else "In progress"}\n\n' + text
         analysis = generate_analysis(text, 'get_final' if finished else 'get_scoreboard_short',
                                      timezone=data['my_timezone'], week=week, league=league, box_scores=boxes)
-        text += '\n\n' + (analysis or 'Local AI analysis is unavailable; the ESPN report is shown above.')
+        if analysis:
+            text += '\n\n' + analysis
     else:
         raise ReportInputError('Unknown report command.')
     return TeamReport(text + '\n\n' + 'Fetched from ESPN ' + stamp, league.teams,

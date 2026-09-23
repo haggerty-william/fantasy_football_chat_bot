@@ -135,7 +135,8 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
                   for t, roster in groups]
         groups = [(t, roster) for t, roster in groups if roster]
     context['league_rules'] = evidence.rules(league) if requested_player_ids is None else {}
-    context['league_history'] = evidence.history(league, [t for t,_ in groups], week) if requested_player_ids is None else {}
+    context['league_history'] = evidence.history(league, [t for t,_ in groups], week,
+        include_performance=report_type in ('get_standings', 'get_power_rankings', 'get_playoffs')) if requested_player_ids is None else {}
     games = {}
     if not historical and isinstance(getattr(league,'year',None),int):
         try:

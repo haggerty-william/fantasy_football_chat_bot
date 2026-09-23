@@ -158,9 +158,9 @@ def playoff_picture(league, compact=False):
                  and bool(periods) and all(len(v)==1 for k,v in periods.items() if int(k)<=regular))
     value = lambda t:t.wins + getattr(t,'ties',0)*.5
     remaining = lambda t:max(0,regular-t.wins-t.losses-getattr(t,'ties',0))
-    lines = ['Playoff picture', f'{slots} playoff places | ESPN current seeds | Strict record bounds; tied records remain unresolved.']
+    lines = ['Playoff picture', f'{slots} playoff places | ESPN current seeds | Current position is not a clinch or elimination.']
     for t in teams:
-        status = 'Currently inside' if t.standing<=slots else 'Currently outside'
+        status = 'Inside current playoff places (provisional)' if t.standing<=slots else 'Outside current playoff places (provisional)'
         if supported:
             threats = sum(o is not t and value(o)+remaining(o)>=value(t) for o in teams)
             ahead = sum(o is not t and value(o)>value(t)+remaining(t) for o in teams)

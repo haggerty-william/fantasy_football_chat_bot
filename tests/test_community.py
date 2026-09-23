@@ -63,6 +63,15 @@ def test_no_clinches_for_division_or_median_rules(league):
     assert 'unconfirmed' in c.playoff_picture(league)
 
 
+def test_early_playoff_position_is_explicitly_provisional(league):
+    league.settings.reg_season_count = 14
+    text = c.playoff_picture(league)
+    assert 'Outside current playoff places (provisional)' in text
+    assert 'Inside current playoff places (provisional)' in text
+    assert 'Current position is not a clinch or elimination.' in text
+    assert 'Eliminated by record bound' not in text
+
+
 def test_picks_update_persist_scope_and_lock(league):
     future={'BUF':{'start':datetime.now(timezone.utc).timestamp()+3600}}
     assert 'Saved: Team 1' in c.pickem(league,[league.box],10,'A',league.teams[0],future)

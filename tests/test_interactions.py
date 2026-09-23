@@ -142,9 +142,10 @@ def league(monkeypatch):
     return league
 
 
-def test_recap_last_completed_week_and_ai_fallback(league):
+def test_recap_keeps_completed_report_when_analyst_has_nothing_to_add(league):
     text = reports.command_report('recap')
-    assert 'Week 2' in text and 'Completed' in text and 'unavailable' in text
+    assert 'Week 2' in text and 'Completed' in text
+    assert 'unavailable' not in text and 'NO_ADDITIONAL_INSIGHT' not in text
     reports.espn.fetch_box_scores.assert_called_once_with(league, week=2)
     assert 'Neighborhood awards' in text
     reports.generate_analysis.assert_called_once()
