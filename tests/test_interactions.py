@@ -7,6 +7,7 @@ import pytest
 
 from gamedaybot.chat import interactions as module
 from gamedaybot.espn import command_reports as reports
+from gamedaybot.commentator_names import ANALYST_NAME, RESPONDER_NAME
 
 
 def interaction(guild=123, channel=456):
@@ -30,6 +31,26 @@ def test_commands_defer_and_use_embeds(monkeypatch, share):
         assert event.followup.send.call_args.kwargs['ephemeral'] is (not share)
         assert event.followup.send.call_args.kwargs['embeds']
         assert not event.followup.send.call_args.kwargs['allowed_mentions'].everyone
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('share', [False, True])
+@pytest.mark.parametrize('has_response', [False, True])
+def test_commands_post_each_announcer_separately_in_order(monkeypatch, share, has_response):
+    async def run():
+        client = module.LeagueClient(123)
+        event = interaction()
+        report = 'Score Update\nOAK 100 - 99 MAP\n\nAI Analysis\nOak needs more bench depth.'
+        if has_response:
+            report += '\n\nAI Hot Take\nGraham, the waiver wire is calling.'
+        monkeypatch.setattr(module, 'command_report', lambda *a, **k: report)
+        await client.respond(event, 'standings', share=share)
+        sent = [call.kwargs for call in event.followup.send.await_args_list]
+        assert len(sent) == (3 if has_response else 2)
+        expected = ['🏈 Scoreboard', ANALYST_NAME] + ([RESPONDER_NAME] if has_response else [])
+        assert [post['embeds'][0].title for post in sent] == expected
+        assert all(len(post['embeds']) == 1 and post['ephemeral'] is (not share) for post in sent)
+        assert all(post['embeds'][0].footer.text == 'GameDayBot • AI commentary' for post in sent[1:])
     asyncio.run(run())
 
 

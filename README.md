@@ -169,8 +169,15 @@ identifier from `GET http://localhost:1234/v1/models`. `AI_BASE_URL` defaults to
 uses `http://host.docker.internal:1234/v1`, verified for this Docker Desktop setup;
 localhost inside a pod would point at the pod itself.
 
-The bot appends short local analysis to scheduled reports using the exact ESPN
-report just generated. Discord displays a purple AI analysis card. There is no
+The bot generates commentary from the exact ESPN report just generated. The
+evidence-first **Graham Ellis** speaks first; **Rex Callahan**, a fictional sports
+debate personality, receives Graham's checked response and the same evidence, then
+adds a pointed reaction that can address Graham by name. Both are fictional
+announcers using your configured local model sequentially. After the report,
+Discord sends Graham's purple commentary card first and Rex's orange response in
+a separate message. Their names identify the speakers; AI disclosure stays in the footer.
+If the second voice fails or cannot add a supported angle, the analyst still sends.
+`AI_SECOND_COMMENTATOR=False` returns to the analyst alone. There is no
 OpenAI service integration, API key requirement, or paid-provider fallback.
 `AI_ANALYSIS=False` disables commentary. Keep LM Studio and its server running.
 
@@ -183,13 +190,14 @@ and stock filler trigger one rewrite; if no useful insight survives, the bot kee
 the report and omits the extra commentary. Current playoff position is not a
 confirmed clinch or elimination.
 
-For stability, requests disable reasoning, limit output to 1,400 tokens, use a low
-temperature (0.3), and admit only one generation at a time within the bot process.
+For stability, requests disable reasoning, limit the analyst to 1,400 tokens and
+Rex to 900, and admit only one commentary pipeline at a time. Temperatures
+are 0.3 for analysis and 0.55 for the second voice.
 The Minikube setup uses Gemma with a 32K context. Reports over 12,000
 characters skip analysis rather than overflowing the context. A busy model,
 timeout, incomplete answer, or malformed response leaves the normal report intact.
 Requests have a 5-second connection timeout and share a configurable total budget
-of up to 600 seconds for research, generation and one correction. Reasoning content
+of up to 600 seconds shared by both voices, research and bounded corrections. Reasoning content
 is never published.
 
 Analysis receives a structured team/manager directory, report, roster and scoring
@@ -197,6 +205,12 @@ evidence, dated news highlights and bounded research tools. The bot executes tho
 tools; the model does not browse arbitrary websites. Missing evidence stays unknown,
 and commentary can still make mistakes. The report remains the source of truth.
 See [the Discord guide](deployment/DISCORD.md) for the tools and settings.
+There are 32 read-only research tools, including future fantasy schedules, complete
+league rules, player discovery, free agents, NFL games, draft history and trade
+analysis. Current reports include compact upcoming-matchup and trade snapshots.
+Pending offers are visible only as far as the configured ESPN account permits;
+acceptance does not establish a completed roster transfer. See the
+[tool catalog and data limits](docs/ESPN_RESEARCH_TOOLS.md).
 Model requests use LM Studio's
 [local Chat Completions API](https://lmstudio.ai/docs/developer/openai-compat/chat-completions).
 
@@ -459,6 +473,7 @@ the rest have defaults.
 | `AI_BASE_URL` | No | `http://localhost:1234/v1` | Local LM Studio server; use the host address from Minikube |
 | `AI_ANALYSIS` | No | `True` | Set to `False` to disable local commentary |
 | `AI_MODEL` | For AI analysis | Unset | Exact local chat model identifier; unset disables generation |
+| `AI_SECOND_COMMENTATOR` | No | `True` | Run Rex Callahan after Graham Ellis's validated analysis using the same model and shared time/tool budget |
 | `DAILY_WAIVER` | No | `False` | Send the Waiver Report daily rather than only on Wednesday |
 | `CLOSE_SCORES_THRESHOLD` | No | `15` | Largest projected point gap that still counts as a close matchup. Lower it for fewer, tighter games. A value that isn't a whole number is ignored |
 | `INIT_MSG` | No | - | Message posted on startup. Leave unset for a silent start - the process restarts more often than you'd think |

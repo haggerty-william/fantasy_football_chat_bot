@@ -130,3 +130,43 @@ def test_negation_actual_dst_moves_and_schedule_humor_remain_valid(text):
 @pytest.mark.parametrize('context', [None, {}, {'league_history': {'teams': []}}])
 def test_unavailable_performance_does_not_invent_expected_values(context):
     assert check('Oak Owls outscored opponents by 47.19 points per game.', context) == []
+
+
+@pytest.mark.parametrize('text', [
+    "The Analyst is hailing Joe Example as a gold standard, but a two-week sprint isn't a marathon. "
+    'This juggernaut status is built on a tiny sample size that could evaporate the moment they face a defense '
+    'capable of actually stifling their production.',
+    'Oak Owls will face a defense that can shut down their scoring.',
+    'They are facing tougher defenses capable of limiting their production.',
+])
+def test_fantasy_schedule_does_not_supply_a_defense_that_suppresses_the_team(text):
+    assert check(text)==['unsupported_opponent_scoring_control']
+
+
+@pytest.mark.parametrize('text', [
+    'Fantasy teams do not face a defense that can stifle their production.',
+    'Oak Owls will face a team capable of outscoring them.',
+    'Oak Owls may face opponents who score more points; their production could regress.',
+])
+def test_legitimate_schedule_risk_and_negation_survive_new_defense_guard(text):
+    assert check(text)==[]
+
+
+def test_real_nfl_player_can_face_a_defense_that_affects_his_production():
+    from copy import deepcopy
+    context=deepcopy(CONTEXT)
+    context['players']=[{'id':'7','name':'Player Alpha'}]
+    assert check('Player Alpha will face a defense capable of stifling his production.',context)==[]
+    context['players']=[]
+    context['tool_evidence']=[{'tool':'search_players','result':{'players':[{'id':'7','name':'Player Alpha'}]}}]
+    assert check('Player Alpha will face a defense capable of stifling his production.',context)==[]
+
+
+def test_verified_nfl_team_comments_remain_separate_from_fantasy_management():
+    from copy import deepcopy
+    from gamedaybot.espn.commentary_checks import check_commentary
+    context=deepcopy(CONTEXT)
+    context['tool_evidence']=[{'tool':'get_nfl_scoreboard','result':{'games':[{'teams':[
+        {'nfl_team':'BUF','name':'Buffalo Bills'}]}]}}]
+    text='Buffalo Bills will face a defense capable of stifling their production.'
+    assert 'unsupported_opponent_scoring_control' not in check_commentary(text,'',context)

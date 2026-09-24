@@ -99,6 +99,122 @@ def fantasy_team_context(league):
     return teams
 
 
+def _prune_context(context, budget, report_type):
+    """Keep explanations and identities before optional detail consumes space.
+
+    Standings are explained by completed scoring, opponent strength and luck,
+    not by a full NFL scoreboard or the entire scoring-rules catalog. Preserve
+    those per-team comparisons and their metric definitions together.
+    """
+    context['context_char_limit'] = budget
+    context['omitted_roster_players'] = 0
+    size = lambda: len(json.dumps(context))
+
+    def omitted(field, count=1):
+        counts = context.setdefault('context_omissions', {})
+        counts[field] = counts.get(field, 0) + count
+        context['context_omission_note'] = ('Omitted data is unknown, not zero or proof of none. '
+                                            'Use the research tools for additional detail.')
+
+    history = context.get('league_history', {})
+    forecasts = history.get('previous_forecasts', [])
+    while forecasts and size() > budget:
+        forecasts.pop()
+        omitted('previous_forecasts')
+
+    if report_type in ('get_standings', 'get_power_rankings', 'get_playoffs') and size() > budget:
+        games = context.get('nfl_games', {})
+        if games:
+            omitted('nfl_games', len(games))
+            context.pop('nfl_games')
+            context['game_state_status'] = 'NFL scoreboard detail omitted for standings context; use player status or NFL scoreboard tools.'
+
+    rules = context.get('league_rules', {})
+    scoring = rules.get('scoring', [])
+    while scoring and size() > budget:
+        scoring.pop()
+        omitted('scoring_rules')
+        rules['scoring_status'] = 'Scoring categories omitted for context; use get_league_rules before assuming a complete scoring system.'
+
+    while context['players'] and size() > budget:
+        context['players'].pop()
+        context['omitted_player_count'] += 1
+    for field in ('news', 'highlights', 'current_roster_depth'):
+        while context.get(field) and size() > budget:
+            context[field].pop()
+            omitted(field)
+
+    # Keep every team's roster shell and a count of missing entries even when
+    # the detailed roster must be fetched later. Avoid starving just one team.
+    while any(row['players'] for row in context['rosters']) and size() > budget:
+        largest = max(context['rosters'], key=lambda row: len(row['players']))
+        largest['players'].pop()
+        largest['omitted_players'] = largest.get('omitted_players', 0) + 1
+        context['omitted_roster_players'] += 1
+
+    # Secondary history can be recovered by tools. Never replace the whole
+    # history object and silently discard every team's explanatory evidence.
+    for field in ('meetings', 'recent_trades'):
+        while history.get(field) and size() > budget:
+            history[field].pop(0)
+            omitted('history_' + field)
+    if size() > budget and context.get('nfl_games'):
+        omitted('nfl_games', len(context['nfl_games']))
+        context.pop('nfl_games')
+        context['game_state_status'] = 'NFL game-state detail omitted; lineup availability is unknown without a status lookup.'
+
+    # In unusual leagues, keep one recent game and the core season comparison
+    # metrics per team; discard redundant component totals before explanations.
+    team_history = history.get('teams', [])
+    while size() > budget:
+        rows = [row['performance']['recent_games'] for row in team_history
+                if isinstance(row.get('performance'), dict)
+                and len(row['performance'].get('recent_games', [])) > 1]
+        if not rows:
+            break
+        max(rows, key=len).pop(0)
+        omitted('older_performance_games')
+    if size() > budget:
+        redundant = ('all_play_wins', 'all_play_ties', 'all_play_losses', 'points_for', 'points_against')
+        for row in team_history:
+            performance = row.get('performance', {})
+            for field in redundant:
+                if field in performance:
+                    performance.pop(field)
+                    omitted('performance_component_totals')
+
+    # Keep trade states visible even if a busy league's extra player legs need
+    # a follow-up tool. The collection count remains a visible-scope count.
+    awareness = context.get('trade_awareness', {})
+    for state in ('recent_completed', 'pending'):
+        collection = awareness.get(state, {})
+        trades = collection.get('trades', [])
+        while len(trades) > 1 and size() > budget:
+            trades.pop()
+            collection['truncated'] = True
+            omitted(state + '_trades')
+        for trade in trades:
+            while trade.get('items') and size() > budget:
+                trade['items'].pop()
+                trade['items_complete'] = False
+                trade['omitted_items'] = trade.get('omitted_items', 0) + 1
+                omitted('trade_items')
+
+    # A hard fallback still retains canonical identities, all per-team core
+    # performance, provenance/cutoffs, and compact awareness. Optional arrays
+    # never displace those facts just because a league has unusual settings.
+    for field in ('matchups',):
+        while context.get(field) and size() > budget:
+            context[field].pop()
+            omitted(field)
+    if size() > budget:
+        # Exact trade directions and team explanations are authoritative. Let
+        # the caller use its explicit unavailable-context fallback rather than
+        # silently erase those facts or exceed the advertised model budget.
+        raise ValueError('Core report evidence exceeds the supported context budget.')
+    return context
+
+
 def build_context(league, report, report_type, week=None, box_scores=None, trade_actions=None, requested_player_ids=None):
     from gamedaybot.espn import analyst_evidence as evidence
     from gamedaybot.espn.nfl_usage import usage_context
@@ -137,6 +253,21 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
     context['league_rules'] = evidence.rules(league) if requested_player_ids is None else {}
     context['league_history'] = evidence.history(league, [t for t,_ in groups], week,
         include_performance=report_type in ('get_standings', 'get_power_rankings', 'get_playoffs')) if requested_player_ids is None else {}
+    if requested_player_ids is None and not historical:
+        from gamedaybot.espn.league_tools import build_schedule_awareness
+        from gamedaybot.espn.transaction_tools import build_trade_awareness
+        try:
+            context['schedule_awareness'] = build_schedule_awareness(league, week=week)
+        except Exception:
+            context['schedule_awareness'] = {'status': 'Upcoming schedule unavailable; do not invent opponents.'}
+        year, league_id = getattr(league, 'year', None), getattr(league, 'league_id', None)
+        if (type(year) is int and 2018 <= year <= 2100 and
+                str(league_id).isdigit() and len(str(league_id)) <= 20 and
+                hasattr(league, 'espn_request')):
+            # Independent of optional model tool use: every current report gets
+            # a bounded look at upcoming opponents and trade states. No caller
+            # should confuse an accepted offer with a completed roster change.
+            context['trade_awareness'] = build_trade_awareness(league, deadline=time.monotonic() + 8)
     games = {}
     if not historical and isinstance(getattr(league,'year',None),int):
         try:
@@ -150,7 +281,8 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
             context['game_state_status'] = 'Unavailable; never infer that a player can still be started.'
     try:
         if requested_player_ids is None:
-            context['league_history']['recent_trades'] = evidence.recent_trade_history(league, {getattr(t,'team_id',None) for t,_ in groups}, week)
+            if 'trade_awareness' not in context:
+                context['league_history']['recent_trades'] = evidence.recent_trade_history(league, {getattr(t,'team_id',None) for t,_ in groups}, week)
             context['league_history']['previous_forecasts'] = evidence.forecast_memory(league, box_scores, games, week)
     except Exception:
         context['league_history']['memory_status'] = 'Trade/forecast history unavailable'
@@ -291,31 +423,12 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
                 'final':historical or entry.get('game',{}).get('completed',False)})
     context['highlights'].sort(key=lambda e:abs(e['vs_projection']),reverse=True)
     context['highlights']=context['highlights'][:6]
-    # Preserve complete compact rosters and league rules before secondary details.
+    # Completed team explanations, identity and compact awareness outrank
+    # optional rule catalogs, forecast archives and roster detail.
     default_budget = 16000 if len(groups) <= 2 else 24000
     try: budget=max(16000,min(48000,int(os.environ.get('AI_CONTEXT_CHAR_LIMIT',str(default_budget)))))
     except ValueError: budget=default_budget
-    context['context_char_limit']=budget
-    context['omitted_roster_players']=0
-    size=lambda:len(json.dumps(context))
-    while context['players'] and size()>budget:
-        context['players'].pop()
-        context['omitted_player_count']+=1
-    for field in ('news','highlights','current_roster_depth'):
-        while context.get(field) and size()>budget: context[field].pop()
-    while any(r['players'] for r in context['rosters']) and size()>budget:
-        largest=max(context['rosters'],key=lambda r:len(r['players']))
-        largest['players'].pop()
-        context['omitted_roster_players']+=1
-    if size()>budget:
-        context['league_history']={'status':'Omitted to fit model context'}
-    if size()>budget:
-        context['league_rules']={'status':'Rules omitted to fit context; do not assume standard scoring'}
-    for field in ('matchups','rosters'):
-        while context.get(field) and size()>budget:
-            removed=context[field].pop()
-            if field=='rosters': context['omitted_roster_players']+=len(removed['players'])
-    return context
+    return _prune_context(context, budget, report_type)
 
 def source_notes(context):
     if not context:

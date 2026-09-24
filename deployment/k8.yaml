@@ -44,6 +44,8 @@ spec:
           value: "600"
         - name: AI_ANALYSIS
           value: "True"
+        - name: AI_SECOND_COMMENTATOR
+          value: "True"
         - name: PYTHONUNBUFFERED
           value: "1"
         - name: LEAGUE_ID

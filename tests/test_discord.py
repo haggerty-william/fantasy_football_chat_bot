@@ -5,6 +5,7 @@ sys.path.insert(1, os.path.abspath('.'))
 from gamedaybot.chat.discord import (Discord, DiscordException, )
 from gamedaybot.chat.discord_format import build_payloads
 from gamedaybot.chat.discord_format import TeamReport
+from gamedaybot.commentator_names import ANALYST_NAME, RESPONDER_NAME
 from types import SimpleNamespace
 
 
@@ -17,7 +18,7 @@ def test_report_tables_include_manager_labels_but_ai_prose_is_unchanged():
     cards = [e for p in build_payloads(report) for e in p['embeds']]
     standings = next(e for e in cards if 'League standings' in e['title'])
     power = next(e for e in cards if 'Power rankings' in e['title'])
-    analysis = next(e for e in cards if 'AI analysis' in e['title'])
+    analysis = next(e for e in cards if e['title'] == ANALYST_NAME)
     assert 'Oak (Alex M.)' in standings['description'] and 'Maple (Alex J.)' in standings['description']
     assert 'Oak (Alex M.)' in power['description'] and 'Maple (Alex J.)' in power['description']
     assert analysis['description'] == 'Oak leads Maple.'
@@ -58,6 +59,31 @@ class TestDiscord:
         assert 'content' not in payload
         assert payload['allowed_mentions'] == {'parse': []}
         assert '**Oak** received **Player One**' in payload['embeds'][0]['description']
+
+    def test_announcers_are_sent_in_separate_ordered_messages(self, mock_requests):
+        mock_requests.post(self.url, status_code=204)
+        self.test_bot.send_message(
+            'Trade Report 2026-09-20:\nOak received Player One\n\n'
+            'AI Analysis\nThis addresses Oak\'s thin bench.\n\n'
+            'AI Hot Take\nGraham, depth only helps if those backups can produce.')
+        posts = [request.json() for request in mock_requests.request_history]
+        assert len(posts) == 3
+        assert all(len(post['embeds']) == 1 for post in posts)
+        analyst, responder = (post['embeds'][0] for post in posts[1:])
+        assert [analyst['title'], responder['title']] == [ANALYST_NAME, RESPONDER_NAME]
+        assert 'thin bench' in analyst['description']
+        assert responder['description'].startswith('Graham,')
+        assert all(card['footer']['text'] == 'GameDayBot • AI commentary'
+                   for card in (analyst, responder))
+
+    def test_failed_analyst_delivery_does_not_send_responder(self, mock_requests):
+        mock_requests.post(self.url, [{'status_code': 204}, {'status_code': 503}])
+        with pytest.raises(DiscordException):
+            self.test_bot.send_message(
+                'League update\nThe report.\n\nAI Analysis\nThe analysis.'
+                '\n\nAI Hot Take\nThe reaction.')
+        assert mock_requests.call_count == 2
+        assert mock_requests.last_request.json()['embeds'][0]['title'] == ANALYST_NAME
 
     def test_quiet_report_sends_nothing(self, mock_requests):
         self.test_bot.send_message('  ')

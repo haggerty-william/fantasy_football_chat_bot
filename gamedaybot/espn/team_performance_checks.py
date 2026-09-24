@@ -29,6 +29,11 @@ _DEFENSE_CONTROL = re.compile(
     r'(?:opponents?[\u2019\x27]?\s+(?:points|scores|scoring)|points against)\b', re.I)
 _DST = re.compile(r'\b(?:D/ST|DST|defense/special teams|defen[cs]ive slot)\b', re.I)
 _ROSTER_MOVE = re.compile(r'\b(?:start|bench|stream|add|drop|pick up|swap|replace|trade)(?:s|ed|ing)?\b', re.I)
+_DEFENSE_OBSTACLE = re.compile(
+    r'\b(?:face|faces|faced|facing|meet|meets|meeting|encounter|encounters)\b'
+    r'[^.!?\n]{0,65}\bdefen[cs]es?\b[^.!?\n]{0,100}'
+    r'\b(?:stifl\w*|suppress\w*|contain\w*|limit\w*|stop\w*|slow\w*|shut\w*)\b'
+    r'[^.!?\n]{0,65}\b(?:production|scoring|points|offen[cs]e)\b', re.I)
 
 
 def _finite(value):
@@ -87,6 +92,20 @@ def _defense_control(sentence):
     return False
 
 
+def _fantasy_defense_obstacle(sentence, players):
+    # A real NFL player's opponent defense can affect his production. Keep
+    # that interpretation when a supplied player is explicitly named; named
+    # NFL clubs are separated by commentary_checks before reaching this guard.
+    if any(re.search(r'(?<!\w)'+re.escape(name)+r'(?!\w)',sentence,re.I) for name in players):
+        return False
+    for match in _DEFENSE_OBSTACLE.finditer(sentence):
+        before=sentence[:match.start()]
+        if re.search(r"\b(?:cannot|can't|won't|doesn't|don't|not|never)\b(?:\W+\w+){0,4}\W*$",before,re.I):
+            continue
+        return True
+    return False
+
+
 def check_team_performance(text, context):
     """Return stable issue names for explicit contradictions, not missing data."""
     if not isinstance(context, dict):
@@ -103,12 +122,18 @@ def check_team_performance(text, context):
                  if isinstance(row.get('name'), str))
     names_pattern = re.compile(r'(?<!\w)(?:' + '|'.join(re.escape(n) for n in sorted(names, key=len, reverse=True))
                                + r')(?!\w)', re.I) if names else None
+    players={row['name'] for row in context.get('players',[]) if isinstance(row.get('name'),str)}
+    players.update(row[1] for roster in context.get('rosters',[]) for row in roster.get('players',[])
+                   if isinstance(row,(list,tuple)) and len(row)>1 and isinstance(row[1],str))
+    for evidence in context.get('tool_evidence',[]):
+        if evidence.get('tool') in ('search_players','get_player_season_details','get_free_agent_pool'):
+            players.update(row['name'] for row in evidence.get('result',{}).get('players',[]) if isinstance(row.get('name'),str))
     problems = set()
     clean = str(text).replace('\u2019', "'").replace('**', '')
     for paragraph in re.split(r'\n\s*\n', clean):
         active = None
         for sentence in _sentences(paragraph, names_pattern):
-            if _defense_control(sentence):
+            if _defense_control(sentence) or _fantasy_defense_obstacle(sentence,players):
                 problems.add('unsupported_opponent_scoring_control')
             mentioned = {m.group().casefold() for m in names_pattern.finditer(sentence)} if names_pattern else set()
             # Compare both sides of a direct scoring-rank tie, including a

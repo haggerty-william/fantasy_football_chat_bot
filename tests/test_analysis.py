@@ -177,7 +177,7 @@ def test_commentary_has_its_own_discord_card(api):
     api.post(ENDPOINT, json=complete())
     text = REPORT + '\n\n' + generate_analysis(REPORT, 'get_scoreboard_short')
     embeds = [e for p in build_payloads(text) for e in p['embeds']]
-    assert embeds[-1]['title'] == '✨ AI analysis'
+    assert embeds[-1]['title'] == 'Graham Ellis'
     assert embeds[-1]['footer']['text'] == 'GameDayBot • AI commentary'
     assert embeds[0]['title'] == '🏈 Scoreboard'
 

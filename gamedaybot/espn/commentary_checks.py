@@ -1,6 +1,7 @@
 ﻿"""Conservative deterministic checks on commentary; not a semantic truth oracle."""
 import json
 import re
+from copy import deepcopy
 from decimal import Decimal, InvalidOperation
 
 
@@ -13,13 +14,61 @@ def _numbers(text):
 
 
 def _entries(context):
-    entries={e['name']:dict(e) for e in context.get('players',[])}
+    entries={e['name']:deepcopy(e) for e in context.get('players',[])}
     for roster in context.get('rosters',[]):
         for row in roster['players']:
             pid,name,position,slot,points,projection,status,nfl_team=row
             entries.setdefault(name,{'name':name,'fantasy_team':roster['team'],'points':points,
                                      'projected_points':projection,'current_status':status,'slot':slot,
                                      'game':context.get('nfl_games',{}).get(nfl_team,{})})
+    # Player facts in newly selected fantasy tools are as authoritative as the
+    # initial snapshot. Keep weeks attached so an old score cannot validate a
+    # claim about the current week (or vice versa). NFL scoreboards/summaries
+    # deliberately do not enter this fantasy-points/ownership index.
+    def week_facts(entry, week, row):
+        if type(week) is not int or not 1 <= week <= 18:
+            return
+        target=entry.setdefault('_week_evidence',{}).setdefault(week,{})
+        if 'points' in row: target['points']=row['points']
+        if isinstance(row.get('fantasy_team'),str): target['fantasy_team']=row['fantasy_team']
+        if 'slot' in row: target['slot']=row['slot']
+        elif 'lineup_slot' in row: target['slot']=row['lineup_slot']
+        stats=row.get('stats',row.get('breakdown'))
+        if isinstance(stats,dict): target['stats']=dict(stats)
+
+    for entry in entries.values():
+        week_facts(entry,context.get('week'),entry)
+        for row in entry.get('previous_weeks',[]):
+            week_facts(entry,row.get('week'),row)
+
+    def merge(row, week=None, current=False, owner=None):
+        if not isinstance(row,dict) or not isinstance(row.get('name'),str): return
+        name=row['name']
+        entry=entries.setdefault(name,{'name':name})
+        for key in ('id','fantasy_team'):
+            if key in row: entry[key]=row[key]
+        if owner is not None and 'fantasy_team' not in entry: entry['fantasy_team']=owner
+        if current and not context.get('historical'):
+            for key in ('current_status','game','slot'):
+                if key in row: entry[key]=deepcopy(row[key])
+        scoped_week=row.get('week',week)
+        week_facts(entry,scoped_week,{**row,**({'fantasy_team':owner} if owner is not None else {})})
+        for detail in row.get('weekly_stats',[]):
+            if isinstance(detail,dict): week_facts(entry,detail.get('week'),detail)
+        if scoped_week==context.get('week'):
+            for key in ('points','stats'):
+                if key in row: entry[key]=deepcopy(row[key])
+    for evidence in context.get('tool_evidence',[]):
+        result=evidence.get('result',{})
+        if not isinstance(result,dict) or 'error' in result: continue
+        name=evidence.get('tool')
+        if name in ('get_player_season_details','get_free_agent_pool','search_players'):
+            for row in result.get('players',[]): merge(row,current=True)
+        elif name=='get_team_profile':
+            for row in result.get('roster',[]): merge(row,current=True,owner=result.get('team'))
+        elif name=='get_week_box_scores':
+            for team in result.get('teams',[]):
+                for row in team.get('players',[]): merge(row,week=result.get('week'),owner=team.get('team'))
     return entries
 
 
@@ -57,6 +106,59 @@ def _team_names(context):
     names.update(r['team'] for r in context.get('rosters', []))
     names.update(t['team'] for t in context.get('league_history', {}).get('teams', []))
     return {name.replace('\u2019', "'") for name in names}
+
+
+def _nfl_names(context):
+    names=set()
+    for evidence in context.get('tool_evidence',[]):
+        result=evidence.get('result',{})
+        if evidence.get('tool')=='get_nfl_scoreboard': games=result.get('games',[])
+        elif evidence.get('tool')=='get_nfl_game_summary': games=[result.get('game',{})]
+        else: continue
+        for game in games:
+            for team in game.get('teams',[]):
+                names.update(team[key] for key in ('nfl_team','name') if isinstance(team.get(key),str) and team[key])
+    return names
+
+
+def _nfl_sentence(sentence, nfl_names, fantasy_names):
+    has=lambda names:any(re.search(r'(?<!\w)'+re.escape(name)+r'(?!\w)',sentence,re.I) for name in names)
+    return has(nfl_names) and not has(fantasy_names)
+
+
+def _nfl_fantasy_score_issues(text, context):
+    """Do not let NFL-score numbers validate direct fantasy score assertions."""
+    nfl_names=_nfl_names(context)
+    if not nfl_names: return []
+    names=_team_names(context)
+    facts={name:{} for name in names}
+    def add(name,week,score):
+        normalized=name.replace('\u2019', "'") if isinstance(name,str) else None
+        if normalized in facts and type(week) is int and isinstance(score,(int,float)) and not isinstance(score,bool):
+            facts[normalized].setdefault(week,set()).add(Decimal(str(score)))
+    for matchup in context.get('matchups',[]):
+        for side in matchup.get('sides',[]): add(side.get('team'),matchup.get('week'),side.get('score'))
+    for team in context.get('league_history',{}).get('teams',[]):
+        for row in team.get('performance',{}).get('recent_games',[]): add(team.get('team'),row.get('week'),row.get('points'))
+    for evidence in context.get('tool_evidence',[]):
+        if evidence.get('tool') not in ('get_week_matchups','get_fantasy_schedule'): continue
+        for matchup in evidence.get('result',{}).get('matchups',[]):
+            weeks=matchup.get('scoring_weeks',[])
+            if len(weeks)==1:
+                for side in matchup.get('teams',[]): add(side.get('team'),weeks[0],side.get('score'))
+    issues=[]
+    for sentence in _sentences(text,names|nfl_names):
+        if (_nfl_sentence(sentence,nfl_names,names) and
+                re.search(r'\b(?:scored|posted|finished with)\s+\d+(?:\.\d+)?\s+fantasy points\b',sentence,re.I)):
+            issues.append('nfl_score_is_not_fantasy_points')
+        weeks={int(w) for w in re.findall(r'\bweek\s+(\d+)\b',sentence,re.I)}
+        if len(weeks)>1: continue
+        for name,values in facts.items():
+            claim=re.search(r'(?<!\w)'+re.escape(name)+r'\s+(?:scored|posted|finished with)\s+(\d+(?:\.\d+)?)\s+(?:fantasy\s+)?points\b',sentence,re.I)
+            if not claim: continue
+            allowed=values.get(next(iter(weeks)),set()) if weeks else set().union(*values.values()) if values else set()
+            if allowed and Decimal(claim.group(1)) not in allowed: issues.append('fantasy_team_points_mismatch')
+    return issues
 
 
 def _sentences(text, team_names):
@@ -113,9 +215,19 @@ def _unsupported_playoff_claim(sentence, report, context):
 
 
 def check_commentary(text, report, context):
-    if not context: return []  # Legacy report-only calls retain their existing behavior.
+    identity_issues = ['unresolved_identity_reference'] if re.search(r'\[(?:team|manager):[^\]\n]*\]', text) else []
+    if not context: return identity_issues
     from gamedaybot.espn.team_performance_checks import check_team_performance
-    problems=check_team_performance(text, context)
+    from gamedaybot.espn.transaction_checks import check_transaction_claims
+    normalized=text.replace('\u2019', "'").replace('**','')
+    # NFL clubs can influence opponents' scoring. The fantasy-management
+    # defense-control guard applies only outside explicitly named NFL context.
+    nfl_names,fantasy_names=_nfl_names(context),_team_names(context)
+    fantasy_text='\n'.join(sentence for sentence in _sentences(normalized,fantasy_names|nfl_names)
+                           if not _nfl_sentence(sentence,nfl_names,fantasy_names)) if nfl_names else text
+    problems=identity_issues + check_team_performance(fantasy_text, context)
+    problems.extend(_nfl_fantasy_score_issues(normalized,context))
+    problems.extend(check_transaction_claims(text, context))
     corpus=report+'\n'+json.dumps(context,ensure_ascii=False)
     clean=re.sub(r'\[(?:F|N)\d+\]','',text).replace('\u2019', "'").replace('**','')
     if _numbers(clean)-_numbers(corpus): problems.append('unsupported_number')
@@ -131,6 +243,8 @@ def check_commentary(text, report, context):
     sentences=_sentences(clean, _team_names(context))
     for sentence in sentences:
         lower=sentence.casefold()
+        explicit_weeks={int(w) for w in re.findall(r'\bweek\s+(\d+)\b',lower)}
+        stated_week=next(iter(explicit_weeks)) if len(explicit_weeks)==1 else None
         mentioned=[]
         for name,e in entries.items():
             alias=name.split()[-1]
@@ -145,7 +259,7 @@ def check_commentary(text, report, context):
         # Football opinions are not objectively disproved by sample size. The
         # prompt requires uncertainty; only concrete contradictions block delivery.
         for e in mentioned:
-            if (context.get('matchups') and e.get('slot') in ('BE','BN','IR')
+            if (context.get('matchups') and stated_week in (None,context.get('week')) and e.get('slot') in ('BE','BN','IR')
                     and e.get('game',{}).get('state') in ('in','post')
                     and re.search(r'\b(boost|carrying|carried|fueled|fueling|benefits?|contributing|contribution|leaning on|bridge the gap|powered|powering)\b',lower)
                     and not re.search(r'\b(bench|benched|reserve|missed|unused|could|might|would|next week|future)\b',lower)):
@@ -163,7 +277,10 @@ def check_commentary(text, report, context):
                 problems.append('finished_game_availability_forecast')
             scored=re.search(subject+r'\s+(?:scored|posted|finished with)\s+(\d+(?:\.\d+)?)\s+(?:fantasy\s+)?points',sentence,re.I)
             if scored:
-                allowed={Decimal(str(p)) for p in [e.get('points'),*[r.get('points') for r in e.get('previous_weeks',[])]] if p is not None}
+                observed=e.get('_week_evidence',{})
+                values=([observed.get(stated_week,{}).get('points')] if stated_week is not None else
+                        [e.get('points'),*[row.get('points') for row in observed.values()]])
+                allowed={Decimal(str(p)) for p in values if p is not None}
                 if Decimal(scored.group(1)) not in allowed: problems.append('player_points_mismatch')
             if len(mentioned)==1:
                 metric_fields={'targets':('receivingTargets','targets'),'carries':('rushingAttempts','carries'),
@@ -172,21 +289,25 @@ def check_commentary(text, report, context):
                                'rushing yards':('rushingYards','rushing_yards'),
                                'receiving yards':('receivingYards','receiving_yards'),
                                'offensive snaps':(None,'offense_snaps')}
-                explicit_week=re.search(r'\bweek\s+(\d+)\b',lower)
-                stated_week=int(explicit_week.group(1)) if explicit_week else None
                 for metric,(espn_key,usage_key) in metric_fields.items():
                     claims=re.findall(r'(\d+(?:\.\d+)?)\s+'+metric+r'\b',lower)
                     if not claims: continue
                     values=[]
                     if stated_week in (None,context.get('week')) and espn_key:
                         values.append(e.get('stats',{}).get(espn_key))
+                    if espn_key:
+                        values.extend(row.get('stats',{}).get(espn_key)
+                                      for w,row in e.get('_week_evidence',{}).items()
+                                      if stated_week is None or w==stated_week)
                     values.extend(row.get(usage_key) for row in e.get('usage',{}).get('weeks',[])
                                   if stated_week is None or row['week']==stated_week)
                     allowed={Decimal(str(v)) for v in values if v is not None}
                     if any(Decimal(claim) not in allowed for claim in claims): problems.append('player_usage_mismatch')
                 for roster in context.get('rosters',[]):
                     team=roster['team']
-                    if team==e.get('fantasy_team'): continue
+                    owner=(e.get('_week_evidence',{}).get(stated_week,{}).get('fantasy_team')
+                           if stated_week is not None and stated_week!=context.get('week') else e.get('fantasy_team'))
+                    if owner is None or team==owner: continue
                     if re.search(re.escape(team)+r"(?:'s)?\s+(?:QB|RB|WR|TE|player|starter)\s+"+subject,sentence,re.I):
                         problems.append('ownership_mismatch')
         if _unsupported_playoff_claim(sentence, report, context):

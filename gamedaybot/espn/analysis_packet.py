@@ -9,6 +9,8 @@ import re
 
 from gamedaybot.espn.research import fantasy_team_context
 
+MAX_PACKET_CHARS = 60000
+
 
 class AnalysisPacket:
     def __init__(self, league, context, report, report_type, week, snapshot):
@@ -21,6 +23,7 @@ class AnalysisPacket:
         self.by_name = {t['name'].casefold(): tid for tid, t in self.teams.items()}
         self.player_teams = {}
         self.tool_results = 0
+        self.receipts = {}
         aliases = {}
         for tid, team in self.teams.items():
             aliases[team['name']] = f'[team:{tid}]'
@@ -61,6 +64,20 @@ class AnalysisPacket:
             return result
         return value
 
+    def resolve_references(self, text):
+        """Resolve only known packet identities before checking public prose."""
+        def replace(match):
+            kind, tid, index = match.groups()
+            team = self.teams.get(tid)
+            if team is None:
+                return match.group()
+            if kind == 'team' and index is None:
+                return team['name']
+            if kind == 'manager' and index is not None and int(index) < len(team['managers']):
+                return team['managers'][int(index)]
+            return match.group()
+        return re.sub(r'\[(team|manager):([^\]:\n]+)(?::(\d+))?\]', replace, text)
+
     def _context(self):
         excluded = {'fantasy_teams', 'rosters', 'players', 'league_history', 'trade_sides',
                     'current_roster_depth', 'highlights', 'tool_evidence'}
@@ -100,6 +117,13 @@ class AnalysisPacket:
         The initial JSON message is refreshed before the next inference. This
         keeps one directory and one copy of each tool result across all rounds.
         """
+        # Repeated cached calls refer to the existing evidence, even across the
+        # two voices. They must not fill the context with duplicate large results.
+        cache_key = json.dumps([name, arguments, result], sort_keys=True, ensure_ascii=False)
+        if cache_key in self.receipts:
+            return deepcopy(self.receipts[cache_key])
+        if len(self.dumps()) + len(json.dumps(self.references(result), ensure_ascii=False)) + 512 > MAX_PACKET_CHARS:
+            result = {'error': 'The research snapshot is full. Use the evidence already supplied.'}
         result = deepcopy(result)
         unavailable = 'error' in result
         self.tool_results += 1
@@ -138,8 +162,10 @@ class AnalysisPacket:
             self.data['research_context'].setdefault('shared_research', {})[record_key] = {
                 'tool': name, 'data': self.references(result)}
             paths.append(['research_context', 'shared_research', record_key])
-        return {'status': 'unavailable' if unavailable else 'stored', 'evidence_paths': paths,
-                'instruction': 'Read this evidence in the refreshed initial JSON snapshot; use its limitations.'}
+        receipt = {'status': 'unavailable' if unavailable else 'stored', 'evidence_paths': paths,
+                   'instruction': 'Read this evidence in the refreshed initial JSON snapshot; use its limitations.'}
+        self.receipts[cache_key] = receipt
+        return deepcopy(receipt)
 
     def dumps(self):
         return json.dumps(self.data, separators=(',', ':'), ensure_ascii=False)

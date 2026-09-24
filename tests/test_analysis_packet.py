@@ -186,3 +186,32 @@ def test_manager_preference_is_scoped_to_management_commentary(source):
     assert 'trades, waivers, drafts, lineups' in instruction
     assert 'Team names are fine for scores and standings' in instruction
     assert 'Do not force manager names elsewhere' in instruction
+
+
+def test_repeated_cached_results_reuse_receipts_and_do_not_grow_packet(source):
+    packet = make_packet(source)
+    result = {'detail': 'x' * 13000}
+    first = packet.add_tool_result('first', 'get_league_rules', result, {})
+    size = len(packet.dumps())
+    for index in range(12):
+        assert packet.add_tool_result(str(index), 'get_league_rules', result, {}) == first
+    assert len(packet.dumps()) == size
+    assert resolve(packet.data, first['evidence_paths'][0])['data'] == result
+
+
+def test_large_unique_results_stop_before_overflowing_packet(source):
+    from gamedaybot.espn.analysis_packet import MAX_PACKET_CHARS
+    packet = make_packet(source)
+    receipts = [packet.add_tool_result(str(index), 'get_league_rules',
+        {'detail': 'x' * 13000, 'part': index}, {}) for index in range(12)]
+    assert receipts[-1]['status'] == 'unavailable'
+    assert len(packet.dumps()) < MAX_PACKET_CHARS
+
+
+def test_model_references_resolve_only_to_known_names(source):
+    packet = make_packet(source)
+    text = packet.resolve_references('[team:1] managed by [manager:1:0]. [team:999] [manager:1:99]')
+    assert text.startswith(packet.teams['1']['name'] + ' managed by ' + packet.teams['1']['managers'][0])
+    assert '[team:999] [manager:1:99]' in text
+    from gamedaybot.espn.commentary_checks import check_commentary
+    assert 'unresolved_identity_reference' in check_commentary(text, '', None)

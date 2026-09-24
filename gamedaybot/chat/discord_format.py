@@ -3,6 +3,7 @@
 import re
 from urllib.parse import urlsplit
 from .team_labels import team_label
+from gamedaybot.commentator_names import ANALYST_NAME, RESPONDER_NAME
 
 
 class TeamReport(str):
@@ -77,7 +78,7 @@ def team_sections(title, table, lines, teams):
     # One card per subject, not one per team/award. Only decorate unambiguous
     # single-team sections; images already label teams in league-wide boards.
     matched = team_matches('\n'.join(lines), teams) if teams else []
-    if title in (STYLES['AI Analysis'][0], STYLES['Current Standings'][0], STYLES['Matchups'][0]):
+    if title in (STYLES['AI Analysis'][0], STYLES['AI Hot Take'][0], STYLES['Current Standings'][0], STYLES['Matchups'][0]):
         matched = []
     yield lines, matched if len(matched) == 1 else []
 
@@ -93,7 +94,8 @@ STYLES = {
     'Pick’em': ('🎯 Weekly pick’em', 0x9B59B6, False),
     'Team alerts': ('🔔 Team alerts', 0xE67E22, False),
     'Research Sources': ('📚 Research sources', 0x607D8B, False),
-    'AI Analysis': ('✨ AI analysis', 0x8E44AD, False),
+    'AI Analysis': (ANALYST_NAME, 0x8E44AD, False),
+    'AI Hot Take': (RESPONDER_NAME, 0xE67E22, False),
     'Score Update': ('🏈 Scoreboard', 0x3498DB, True),
     'Final Score Update': ('🏁 Final scores', 0x2ECC71, True),
     'Approximate Projected Scores': ('🔮 Projected scores', 0x9B59B6, True),
@@ -262,12 +264,12 @@ def build_payloads(text, teams=None):
                 else:
                     readable.append(line)
             lines, table = readable, False
-        if title != STYLES['AI Analysis'][0]:
+        if title not in (STYLES['AI Analysis'][0], STYLES['AI Hot Take'][0]):
             lines = [label_team_names(line, teams) for line in lines]
         if table:
             # Keep team names from closing a numeric table's code fence.
             body = '\n'.join(lines).strip().replace('`', 'ˋ')
-        elif title == STYLES['AI Analysis'][0]:
+        elif title in (STYLES['AI Analysis'][0], STYLES['AI Hot Take'][0]):
             body = '\n'.join(format_analysis_line(line) for line in lines).strip()
         else:
             names = {team_label(team, teams) for team in teams}
@@ -287,7 +289,7 @@ def build_payloads(text, teams=None):
             embed = {
                 'title': title + suffix,
                 'color': color,
-                'footer': {'text': 'GameDayBot • AI commentary' if title == '✨ AI analysis'
+                'footer': {'text': 'GameDayBot • AI commentary' if title in (STYLES['AI Analysis'][0], STYLES['AI Hot Take'][0])
                            else 'GameDayBot • ESPN Fantasy'},
             }
             if part.strip():
@@ -299,16 +301,20 @@ def build_payloads(text, teams=None):
                 if len(with_logos) == 2:
                     embed['thumbnail'] = {'url': logo_url(with_logos[1])}
                     embed['footer']['text'] += ' • Also shown: ' + str(with_logos[1].team_name)[:256]
-            embeds.append(embed)
+            speaker = title if title in (ANALYST_NAME, RESPONDER_NAME) else None
+            embeds.append((embed, speaker))
 
-    batch, length = [], 0
-    for embed in embeds:
+    batch, length, previous_speaker = [], 0, None
+    for embed, speaker in embeds:
         size = (len(embed['title']) + len(embed.get('description', '')) + len(embed['footer']['text'])
                 + len(embed.get('author', {}).get('name', '')))
-        if batch and (length + size > 5800 or len(batch) == 10):
+        # Each speaker gets a separate post, in report -> analyst -> response order.
+        # Continuation cards for the same speaker can share a post within limits.
+        if batch and (length + size > 5800 or len(batch) == 10 or speaker != previous_speaker):
             yield {'embeds': batch, 'allowed_mentions': {'parse': []}}
             batch, length = [], 0
         batch.append(embed)
         length += size
+        previous_speaker = speaker
     if batch:
         yield {'embeds': batch, 'allowed_mentions': {'parse': []}}

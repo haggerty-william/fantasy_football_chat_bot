@@ -225,6 +225,28 @@ Primary feed documentation:
 
 ### Model-requested research
 
+The bot now has 32 read-only tools. The [complete ESPN research catalog](../docs/ESPN_RESEARCH_TOOLS.md)
+lists the league, schedule, draft, player discovery, NFL game and transaction tools,
+with source references and visibility limits. Current reports receive compact upcoming
+matchups, visible pending offers and recent completed trades automatically. Historical
+reports exclude these current snapshots. Pending offers are limited to the configured
+ESPN account's visibility; a trade acceptance event does not prove players transferred.
+
+Commentary runs sequentially: **Graham Ellis** checks the evidence, then **Rex Callahan**
+receives Graham's validated response and the same structured packet. Both are fictional
+announcers; Rex adds pointed management banter and uncertain forecasts and can address
+Graham by name. Both use `AI_MODEL`; they do not require two loaded models. After the
+report, Discord sends Graham's card first and Rex's response in a separate message,
+within Discord's message limits. Speaker headings use their names, with AI disclosure
+only in the footer. If the second voice
+fails validation, times out or repeats the analyst, the analyst still sends.
+Set `AI_SECOND_COMMENTATOR=False` to use only the analyst.
+
+The two voices share the existing 600-second maximum, four research rounds and 12
+calls, with time reserved for the reaction. Individual tool results and their combined
+evidence are bounded; large queries ask the model to narrow the team/week/page. No
+Discord conversation or reaction listeners are enabled by this change.
+
 `AI_RESEARCH_TOOLS=True` (default) enables `get_player_news`, `get_player_stats`,
 and `get_player_status` through LM Studio's chat-completions function-calling API.
 The model can request one to three exact player IDs from the report per tool call.
@@ -341,15 +363,19 @@ are distinguishable from pregame forecasts.
 `AI_REQUEST_TIMEOUT_SECONDS` defaults to 600 (allowed 30-600). This is the read
 timeout for one LM Studio request, capped by the remaining total budget.
 `AI_ANALYSIS_TIMEOUT_SECONDS` defaults to 600
-(allowed 120-600), covering research, generation and correction. Initial generation
-reserves 45 seconds for correction; correction may use the entire remaining budget.
+(allowed 120-600), covering both voices, research and correction. With two voices,
+30% of that window (at most 180 seconds) is reserved for Rex. The analyst
+keeps a 45-second correction reserve inside its own portion. A completed analyst
+is retained if there is too little time left for the second voice.
 The Discord command waits this budget plus 60 seconds: 660
 seconds by default. Commands still defer immediately and keep the gateway responsive.
 The extra time lets slower local generations finish instead of discarding them at
 the previous 60-second request/120-second command limits. Timeouts remain finite.
 
 Analysis allows up to 350 words in short paragraphs, 1,400 output tokens per
-generation/correction, and a 6,000-character hard cap. Discord splits longer
+analyst generation/correction, and a 6,000-character hard cap. Rex uses at
+most 900 output tokens and is prompted for 50-100 words. Repeated statistical
+summaries and overlong reactions trigger a rewrite or omission. Discord splits longer
 analysis into numbered embeds and groups them within message size limits.
 
 ### Keep the local model loaded

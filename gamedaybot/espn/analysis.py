@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from gamedaybot.commentator_names import ANALYST_NAME, RESPONDER_NAME
 from gamedaybot.utils.util import has_sendable_content, str_to_bool
 from gamedaybot.espn.research import build_context
 from gamedaybot.espn.analysis_packet import AnalysisPacket
@@ -47,6 +48,25 @@ or team strengths. You may request additional evidence with the supplied researc
 Use tools only when evidence is missing; request up to three relevant player IDs together.
 You have at most four research rounds, three calls per round, twelve calls total.
 Never invent IDs. Tool errors mean unknown data.
+For future fantasy opponents use get_fantasy_schedule or get_week_matchups; for
+past/current lineup contributions use get_week_box_scores. get_league_rules verifies
+scoring, trade and playoff rules; get_team_profile, get_scoring_splits,
+get_draft_board and get_head_to_head expand team evidence only when relevant.
+Use search_players to discover IDs outside supplied rosters, get_free_agent_pool for
+available players, get_player_season_details for stats, and get_player_nfl_schedule
+for their upcoming NFL opponents. get_nfl_scoreboard and get_nfl_game_summary supply
+NFL game states, leaders and scoring plays, not fantasy points or full articles.
+The default schedule_awareness and trade_awareness are compact; tools return more detail.
+get_pending_trades shows only offers visible to the authenticated ESPN account.
+An empty list is NOT proof that no private offers exist. Pending/proposed/accepted
+offers awaiting processing are NOT completed roster transfers. get_recent_trades
+verifies completed transfers; get_transaction_history includes lifecycle events,
+where TRADE_ACCEPT alone is not proof of completion. evaluate_trade_proposal is
+hypothetical analysis, never an actual offer or completed trade. Never say a manager
+already gave away or received players on the strength of a pending/proposed offer.
+Future playoff pairings are provisional, future zeros are placeholders, and current
+rosters/status cannot establish what was known in an old matchup. Never use NFL game
+scores as player or fantasy team points. Every tool is read-only.
 For trade judgments prefer simulate_trade_impact; for waiver value use find_available_replacements.
 Use get_workload_changes for role trends, get_schedule_outlook for byes, and simulate_playoff_odds
 for estimated playoff chances. review_previous_predictions supplies exact saved commentary and later results.
@@ -182,7 +202,10 @@ def generate_analysis(report, report_type, timezone='America/New_York', week=Non
         return ''
     try:
         started = time.monotonic()
-        deadline = started + analysis_timeout()
+        total_deadline = started + analysis_timeout()
+        dual = str_to_bool(os.environ.get('AI_SECOND_COMMENTATOR', 'True'))
+        # Reserve synthesis time for the second voice within the SAME ten minutes.
+        deadline = total_deadline - min(180, analysis_timeout() * .3) if dual else total_deadline
         from gamedaybot.espn.model_readiness import ensure_model
         if not ensure_model(timeout=min(90, analysis_timeout() - 60)):
             logger.warning('Configured local model is not ready; sending ESPN report only')
@@ -200,6 +223,7 @@ def generate_analysis(report, report_type, timezone='America/New_York', week=Non
         base_url = os.environ.get('AI_BASE_URL', DEFAULT_BASE_URL).strip().rstrip('/')
         # No hosted-provider fallback or inherited OpenAI credentials.
         instructions = INSTRUCTIONS
+        from gamedaybot.espn.commentators import ANALYST_ROLE
         if report_type == 'get_trade_report':
             instructions += """\nTRADE VERDICT: For each deal, name the side you favor and the side taking the
 short end, with a concrete reason from the supplied player evidence. Predict likely
@@ -226,13 +250,15 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
                                                     'Write one short paragraph per deal, at most 350 words total')
         packet = AnalysisPacket(league, context, report, report_type, week, snapshot_time.isoformat())
         packet.data['writing_reminder'] += ' ' + EDITORIAL_REMINDER
+        if dual:
+            packet.data['commentary_assignment'] = ANALYST_ROLE
         if context and context.get('trade_sides'):
             packet.data['trade_writing_reminder'] = ('Call simulate_trade_impact before judging this trade. '
                 'Each team record lists exactly what it sent and received. Forecast both teams; do not retell the exchange.')
         payload = {
             'model': model,
             'messages': [
-                {'role': 'system', 'content': instructions + '\nTask: ' + REPORT_CONTEXT[report_type]},
+                {'role': 'system', 'content': instructions + (ANALYST_ROLE if dual else '') + '\nTask: ' + REPORT_CONTEXT[report_type]},
                 {'role': 'user', 'content': packet.dumps()},
             ],
             'max_tokens': MAX_OUTPUT_TOKENS,
@@ -244,6 +270,7 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
         researcher = None
         if league is not None and context and str_to_bool(os.environ.get('AI_RESEARCH_TOOLS', 'True')):
             researcher = ResearchTools(league, context, week, box_scores, deadline - 45)
+            researcher.packet = packet
             payload.update(tools=TOOLS, tool_choice='auto')
         # Keep every request within the remaining interaction budget. The last
         # round is synthesis only, even if the model keeps requesting research.
@@ -272,6 +299,7 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
             if len({c['id'] for c in calls}) != len(calls):
                 return ''
             payload['messages'].append({'role': 'assistant', 'content': None, 'tool_calls': calls})
+            researcher.rounds += 1
             for index, call in enumerate(calls):
                 fn = call['function']
                 evidence = (researcher.execute(fn.get('name'), fn.get('arguments')) if index < CALLS_PER_ROUND else
@@ -310,7 +338,7 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
             return ''
         from gamedaybot.espn.commentary_checks import check_commentary, fallback_highlights
         from gamedaybot.espn.commentary_quality import check_analysis_value
-        commentary = inline_citations(commentary, context)
+        commentary = packet.resolve_references(inline_citations(commentary, context))
         if commentary == NO_INSIGHT:
             return ''
         factual_issues = check_commentary(commentary, report, context)
@@ -348,17 +376,15 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
                                 and candidate.strip() and len(candidate)<=MAX_RESPONSE_CHARS
                                 and not msg.get('refusal') and not msg.get('tool_calls')
                                 and '<think>' not in candidate and '</think>' not in candidate):
-                            candidate = inline_citations(candidate.strip(), context)
+                            candidate = packet.resolve_references(inline_citations(candidate.strip(), context))
                             if candidate == NO_INSIGHT:
                                 return ''
                             corrected_issues = (check_commentary(candidate, report, context) +
                                                 check_analysis_value(candidate, report, report_type, context))
                             if not corrected_issues:
                                 logger.warning('Corrected commentary passed checks')
-                                _archive(league, context, week, report_type, model, candidate)
-                                return ('AI Analysis\n'
-                                    f'Based on ESPN report generated {snapshot_time:%b %d, %Y · %I:%M %p %Z}\n\n'
-                                    + candidate)
+                                return _finish_commentary(candidate, league, context, week, report_type, model,
+                                    snapshot_time, packet, researcher, instructions, report, base_url, total_deadline, dual)
                 except (requests.RequestException, ValueError, KeyError, IndexError, TypeError, AttributeError):
                     logger.warning('Commentary correction unavailable')
             if not factual_issues:
@@ -368,15 +394,34 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
             fallback = fallback_highlights(context or {})
             note = 'The AI draft could not be verified. These highlights are calculated from ESPN data.'
             return 'Data Highlights\n' + note + ('\n\n' + fallback if fallback else '')
-        _archive(league, context, week, report_type, model, commentary)
-        return ('AI Analysis\n'
-                f'Based on ESPN report generated {snapshot_time:%b %d, %Y · %I:%M %p %Z}\n\n'
-                + inline_citations(commentary, context))
+        return _finish_commentary(commentary, league, context, week, report_type, model,
+            snapshot_time, packet, researcher, instructions, report, base_url, total_deadline, dual)
     except (requests.RequestException, ValueError, KeyError, IndexError, TypeError, AttributeError):
         logger.warning('AI analysis unavailable; sending ESPN report only')
         return ''
     finally:
         _generation_lock.release()
+
+
+def _finish_commentary(commentary, league, context, week, report_type, model,
+                       snapshot_time, packet, researcher, instructions, report,
+                       base_url, deadline, dual):
+    from gamedaybot.espn.commentators import hot_take
+    reaction = ''
+    if dual:
+        try:
+            reaction = hot_take(analyst=commentary, packet=packet, researcher=researcher,
+                instructions=instructions, report=report, report_type=report_type,
+                context=context, model=model, base_url=base_url, deadline=deadline)
+        except Exception as error:
+            # Setup/serialization failures occur before the second stage's own
+            # request guard. They must not discard an already verified analyst.
+            logger.warning('Second commentator unavailable (%s); retaining analyst', type(error).__name__)
+    archive_text = (ANALYST_NAME + ': ' + commentary + '\n\n' + RESPONDER_NAME + ': ' + reaction) if reaction else commentary
+    _archive(league, context, week, report_type, model, archive_text)
+    return ('AI Analysis\n'
+            f'Based on ESPN report generated {snapshot_time:%b %d, %Y · %I:%M %p %Z}\n\n'
+            + commentary + ('\n\nAI Hot Take\n' + reaction if reaction else ''))
 
 
 def _archive(league, context, week, report_type, model, commentary):

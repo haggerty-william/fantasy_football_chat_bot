@@ -8,6 +8,7 @@ import pytest
 from gamedaybot.chat import discord_images as images
 from gamedaybot.chat.discord_format import TeamReport
 from gamedaybot.chat.discord import Discord
+from gamedaybot.commentator_names import ANALYST_NAME, RESPONDER_NAME
 
 URL = 'https://g.espncdn.com/logo.svg'
 SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="red"/></svg>'
@@ -33,11 +34,13 @@ def test_standings_one_message_one_table_with_all_ten_rows(mock_requests):
     mock_requests.get(URL,text=SVG,headers={'Content-Type':'image/svg+xml'})
     teams=[Obj(team_name='Team '+str(i),team_abbrev='T'+str(i),logo_url=URL) for i in range(10)]
     report=TeamReport('Current Standings\n'+'\n'.join(f'{i+1}: (1-1) {t.team_name}' for i,t in enumerate(teams))+
-                      '\n\nAI Analysis\nA close race.\n\nResearch Sources\nESPN', teams)
+                      '\n\nAI Analysis\nA close race.\n\nAI Hot Take\nThat record owes the schedule a thank-you card.', teams)
     prepared=images.prepare_payloads(report)
-    assert len(prepared)==1
+    assert len(prepared)==3
     payload,files=prepared[0]
-    assert len(payload['embeds'])==3 and len(files)==1
+    assert len(payload['embeds'])==1 and len(files)==1
+    assert [post[0]['embeds'][0]['title'] for post in prepared[1:]] == [ANALYST_NAME, RESPONDER_NAME]
+    assert all(len(payload['embeds']) == 1 and not files for payload, files in prepared[1:])
     assert payload['embeds'][0]['image']['url']=='attachment://image-0.png'
     assert Image.open(BytesIO(files[0][1])).size == (1320,830)
     assert 'description' not in payload['embeds'][0]
@@ -137,11 +140,13 @@ def test_matchups_are_one_board_with_named_scores_and_no_duplicate_cards(monkeyp
     monkeypatch.setattr(images,'fetch_logo',lambda url:mock_image.getvalue())
     text=TeamReport('Matchups\nold duplicate names\n\nScore Update\nold scores\n\n'
                     'Approximate Projected Scores\nold projections\nFetched from ESPN today\n\n'
-                    'AI Analysis\nCommentary\n\nResearch Sources\nESPN',teams,matchups=boxes)
+                    'AI Analysis\nCommentary\n\nAI Hot Take\nA pointed reaction.',teams,matchups=boxes)
     prepared=images.prepare_payloads(text)
-    assert len(prepared)==1
+    assert len(prepared)==3
     payload,files=prepared[0]
-    assert len(payload['embeds'])==3 and len(files)==1
+    assert len(payload['embeds'])==1 and len(files)==1
+    assert [post[0]['embeds'][0]['title'] for post in prepared[1:]] == [ANALYST_NAME, RESPONDER_NAME]
+    assert all(len(payload['embeds']) == 1 and not files for payload, files in prepared[1:])
     board=payload['embeds'][0]
     assert 'author' not in board and 'thumbnail' not in board
     assert 'description' not in board
@@ -168,9 +173,10 @@ def test_historical_recap_is_one_final_board_and_one_awards_card(monkeypatch):
                     'Trophies of the week:\n👑 High score 👑\nOak 100\n💩 Low score 💩\nMaple 90\n\n'
                     'AI Analysis\nA recap.',teams,boxes,final_scores=True,week=1)
     prepared=images.prepare_payloads(text)
-    assert len(prepared)==1
+    assert len(prepared)==2
     cards=prepared[0][0]['embeds']
-    assert len(cards)==3
+    assert len(cards)==2
+    assert prepared[1][0]['embeds'][0]['title'] == ANALYST_NAME
     assert 'Final scores' in cards[0]['title'] and 'Week 1' in cards[0]['title']
     assert 'description' not in cards[0]
     assert 'High score' in cards[1]['description'] and 'Low score' in cards[1]['description']
