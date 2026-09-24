@@ -60,7 +60,14 @@ class TestDiscord:
         assert payload['allowed_mentions'] == {'parse': []}
         assert '**Oak** received **Player One**' in payload['embeds'][0]['description']
 
-    def test_announcers_are_sent_in_separate_ordered_messages(self, mock_requests):
+    @pytest.mark.parametrize('model,label', [
+        ('google/gemma-4-12b-qat', 'Gemma 4 12B QAT'),
+        ('qwen/qwen3.6-35b-a3b', 'Qwen3.6 35B A3B'),
+        ('nvidia/NVIDIA-Nemotron-Nano-9B-v2-Q4_K_M.gguf', 'NVIDIA Nemotron Nano 9B V2 Q4_K_M'),
+        ('', 'Local model'),
+    ])
+    def test_announcers_are_sent_in_separate_ordered_messages(self, mock_requests, monkeypatch, model, label):
+        monkeypatch.setenv('AI_MODEL', model)
         mock_requests.post(self.url, status_code=204)
         self.test_bot.send_message(
             'Trade Report 2026-09-20:\nOak received Player One\n\n'
@@ -73,7 +80,8 @@ class TestDiscord:
         assert [analyst['title'], responder['title']] == [ANALYST_NAME, RESPONDER_NAME]
         assert 'thin bench' in analyst['description']
         assert responder['description'].startswith('Graham,')
-        assert all(card['footer']['text'] == 'GameDayBot • AI commentary'
+        assert posts[0]['embeds'][0]['footer']['text'] == 'GameDayBot • ESPN Fantasy'
+        assert all(card['footer']['text'] == 'GameDayBot • ' + label
                    for card in (analyst, responder))
 
     def test_failed_analyst_delivery_does_not_send_responder(self, mock_requests):

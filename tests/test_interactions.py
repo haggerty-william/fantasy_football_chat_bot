@@ -37,6 +37,7 @@ def test_commands_defer_and_use_embeds(monkeypatch, share):
 @pytest.mark.parametrize('share', [False, True])
 @pytest.mark.parametrize('has_response', [False, True])
 def test_commands_post_each_announcer_separately_in_order(monkeypatch, share, has_response):
+    monkeypatch.setenv('AI_MODEL', 'google/gemma-4-12b-qat')
     async def run():
         client = module.LeagueClient(123)
         event = interaction()
@@ -50,7 +51,7 @@ def test_commands_post_each_announcer_separately_in_order(monkeypatch, share, ha
         expected = ['🏈 Scoreboard', ANALYST_NAME] + ([RESPONDER_NAME] if has_response else [])
         assert [post['embeds'][0].title for post in sent] == expected
         assert all(len(post['embeds']) == 1 and post['ephemeral'] is (not share) for post in sent)
-        assert all(post['embeds'][0].footer.text == 'GameDayBot • AI commentary' for post in sent[1:])
+        assert all(post['embeds'][0].footer.text == 'GameDayBot • Gemma 4 12B QAT' for post in sent[1:])
     asyncio.run(run())
 
 

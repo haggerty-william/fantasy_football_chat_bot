@@ -99,6 +99,106 @@ def fantasy_team_context(league):
     return teams
 
 
+def normalize_event_facts(league, events):
+    """Project observed events onto a bounded schema, never raw ESPN objects."""
+    if not isinstance(events, list) or not 1 <= len(events) <= 20:
+        raise ValueError('Observed event batch must contain one to twenty events.')
+    teams = {str(team.team_id): team for team in getattr(league, 'teams', [])}
+    statuses = {'ACTIVE', 'OUT', 'QUESTIONABLE', 'DOUBTFUL', 'INACTIVE', 'INJURY_RESERVE',
+                'IR', 'SUSPENSION', 'SUSPENDED', 'PUP', 'DAY_TO_DAY', 'PROBABLE',
+                'NON_FOOTBALL_INJURY', 'NON_FOOTBALL_ILLNESS', 'UNKNOWN'}
+    def status(value):
+        normalized = re.sub(r'[\s-]+', '_', value.strip().upper()) if isinstance(value, str) else 'UNKNOWN'
+        normalized = {'NORMAL': 'ACTIVE', 'IR': 'INJURY_RESERVE', 'INJURED_RESERVE': 'INJURY_RESERVE',
+                      'SUSPENDED': 'SUSPENSION', 'DTD': 'DAY_TO_DAY', 'PHYSICALLY_UNABLE_TO_PERFORM': 'PUP'}.get(normalized, normalized)
+        return normalized if normalized in statuses else 'UNKNOWN'
+    def identity(value):
+        return str(value) if not isinstance(value, bool) and re.fullmatch(r'-?\d{1,12}', str(value)) else None
+    def stamp(value):
+        if not isinstance(value, str):
+            raise ValueError('Observed events require a timestamp.')
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            raise ValueError('Observed event timestamps require a timezone.')
+        return parsed.astimezone(timezone.utc).isoformat()
+    def items(raw):
+        if not isinstance(raw, list) or len(raw) > 20:
+            raise ValueError('Unsupported observed transaction items.')
+        values = []
+        for row in raw:
+            if not isinstance(row, dict) or identity(row.get('player_id')) is None:
+                raise ValueError('Observed transaction requires exact player IDs.')
+            item = {'player_id': identity(row['player_id']),
+                    'from_team_id': str(row.get('from_team_id')) if str(row.get('from_team_id')) in teams else None,
+                    'to_team_id': str(row.get('to_team_id')) if str(row.get('to_team_id')) in teams else None}
+            if isinstance(row.get('player_name'), str):
+                item['player_name'] = row['player_name'][:100]
+            if row.get('type') in ('TRADE', 'ADD', 'DROP', 'MOVE', 'KEEPER'):
+                item['type'] = row['type']
+            values.append(item)
+        return values
+    result, seen = [], set()
+    for event in events:
+        if not isinstance(event, dict) or event.get('kind') not in ('injury_status', 'trade_proposal', 'roster_move'):
+            raise ValueError('Unknown observed event kind.')
+        eid = event.get('id')
+        if not isinstance(eid, str) or not 1 <= len(eid) <= 200 or eid in seen:
+            raise ValueError('Observed events require unique bounded IDs.')
+        seen.add(eid)
+        row = {'id': eid, 'kind': event['kind'], 'observed_at': stamp(event.get('observed_at'))}
+        if event['kind'] == 'injury_status':
+            tid, pid = str(event.get('team_id')), identity(event.get('player_id'))
+            if tid not in teams or pid is None or not isinstance(event.get('player_name'), str):
+                raise ValueError('Observed injury requires a known team and player.')
+            row.update(team_id=tid, player_id=pid, player_name=event['player_name'][:100],
+                       previous_status=status(event.get('previous_status')), status=status(event.get('status')))
+            current_owner, current_player = next(((team, player) for team in teams.values()
+                for player in getattr(team, 'roster', []) if str(getattr(player, 'playerId', '')) == pid), (None, None))
+            designation = getattr(current_player, 'injuryStatus', None)
+            row['current_snapshot_status'] = status(designation)
+            row['current_snapshot_team_id'] = str(current_owner.team_id) if current_owner is not None else None
+            row['status_scope'] = ('status/previous_status belong to the dated event observation; current_snapshot_status '
+                                    'belongs to the current league snapshot and may supersede a queued older event. Neither proves health.')
+        else:
+            key = 'trade' if event['kind'] == 'trade_proposal' else 'transaction'
+            raw = event.get(key)
+            if not isinstance(raw, dict):
+                raise ValueError('Observed transaction evidence unavailable.')
+            legs = items(raw.get('items', []))
+            tids = {str(tid) for tid in raw.get('team_ids', []) if str(tid) in teams}
+            tids.update(item[field] for item in legs for field in ('from_team_id', 'to_team_id') if item[field] is not None)
+            if not tids:
+                raise ValueError('Observed transaction has no known participating team.')
+            detail = {'team_ids': sorted(tids), 'items': legs,
+                      'items_complete': raw.get('items_complete') is True}
+            if event['kind'] == 'trade_proposal':
+                states = {'proposed', 'accepted_awaiting_processing', 'pending_state_unconfirmed',
+                          'closed_without_verified_completion'}
+                if raw.get('completed') is not False or raw.get('state') not in states:
+                    raise ValueError('Proposal events cannot establish completed transfers.')
+                detail.update(state=raw['state'], completed=False,
+                              actionable=raw['state'] != 'closed_without_verified_completion',
+                              is_pending=raw.get('is_pending') if isinstance(raw.get('is_pending'), bool) else None)
+            else:
+                if (raw.get('type') not in ('FREEAGENT', 'WAIVER', 'ROSTER', 'RETRO_ROSTER', 'FUTURE_ROSTER') or
+                        raw.get('source_status') not in ('EXECUTED', 'COMPLETE', 'COMPLETED')):
+                    raise ValueError('Roster events require executed roster moves, not offers or private claims.')
+                detail.update(type=raw['type'], source_status=raw['source_status'])
+                if type(raw.get('scoring_week')) is int:
+                    detail['scoring_week'] = raw['scoring_week']
+            for field in ('proposed_at', 'accepted_at', 'expires_at', 'processed_at'):
+                if raw.get(field) is not None:
+                    detail[field] = stamp(raw[field])
+            if raw.get('source_status') in ('PENDING', 'PROPOSED', 'ACCEPTED', 'EXECUTED', 'COMPLETE', 'COMPLETED',
+                                           'CANCELED', 'CANCELLED', 'DECLINED', 'REJECTED', 'VETOED', 'EXPIRED', 'FAILED', 'ERROR', 'UNKNOWN'):
+                detail['source_status'] = raw['source_status']
+            row[key] = detail
+        result.append(row)
+    if len(json.dumps(result, ensure_ascii=False)) > 12000:
+        raise ValueError('Observed event evidence exceeds the analysis batch limit.')
+    return result
+
+
 def _prune_context(context, budget, report_type):
     """Keep explanations and identities before optional detail consumes space.
 
@@ -215,7 +315,7 @@ def _prune_context(context, budget, report_type):
     return context
 
 
-def build_context(league, report, report_type, week=None, box_scores=None, trade_actions=None, requested_player_ids=None):
+def build_context(league, report, report_type, week=None, box_scores=None, trade_actions=None, requested_player_ids=None, event_facts=None):
     from gamedaybot.espn import analyst_evidence as evidence
     from gamedaybot.espn.nfl_usage import usage_context
     from gamedaybot.espn.community import nfl_games
@@ -228,6 +328,29 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
                'historical': historical, 'status_updated_at': None, 'players': [], 'news': [],
                'limitations': ['Missing data is unknown, not zero. ACTIVE is not proof of full health.',
                               'News briefs are attributed reports, not confirmed availability.']}
+    observed_events = normalize_event_facts(league, event_facts) if event_facts is not None else []
+    if observed_events and historical:
+        raise ValueError('Current observed events cannot be attached to historical analysis.')
+    affected_teams, affected_players, observed_statuses = set(), set(), {}
+    if observed_events:
+        context['event_facts'] = observed_events
+        context['event_scope'] = ('Authoritative changes observed between bot scans. observed_at is when the bot saw the data, '
+                                  'not the time an injury occurred or ESPN changed its designation. Earlier status is a prior observation, '
+                                  'not a diagnosis. UNKNOWN and ACTIVE do not prove health. Proposed/accepted trades are not completed; '
+                                  'closed offers are not actionable. No medical prognosis is supplied.')
+        for event in observed_events:
+            if event['kind'] == 'injury_status':
+                affected_teams.add(event['team_id'])
+                if event.get('current_snapshot_team_id') is not None:
+                    affected_teams.add(event['current_snapshot_team_id'])
+                affected_players.add(event['player_id'])
+                current = observed_statuses.get(event['player_id'])
+                if current is None or event['observed_at'] > current['observed_at']:
+                    observed_statuses[event['player_id']] = event
+            else:
+                detail = event.get('trade', event.get('transaction', {}))
+                affected_teams.update(detail['team_ids'])
+                affected_players.update(item['player_id'] for item in detail['items'])
     groups = []
     if box_scores is not None:
         for box in box_scores:
@@ -237,6 +360,8 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
                     groups.append((team, getattr(box, side + '_lineup', [])))
     else:
         groups = [(team, getattr(team, 'roster', [])) for team in getattr(league, 'teams', [])]
+    if affected_teams and requested_player_ids is None:
+        groups = [(team, roster) for team, roster in groups if str(getattr(team, 'team_id', '')) in affected_teams]
     if report_type == 'get_rivalry':
         focused = [(t,r) for t,r in groups if normalized(t.team_name) in normalized(report)]
         if focused: groups = focused
@@ -318,6 +443,17 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
                      'projected_points':number(stats.get('projected_points'))}
             if slot is not None: entry['slot'] = slot
             if not historical: entry['current_status'] = getattr(player,'injuryStatus',None) or 'UNKNOWN'
+            observed_status = observed_statuses.get(str(entry['id']))
+            if observed_status is not None:
+                entry['event_status'] = observed_status['status']
+                entry['event_status_observed_at'] = observed_status['observed_at']
+                if observed_status['current_snapshot_status'] == 'UNKNOWN':
+                    entry['current_status'] = observed_status['status']
+                    entry['status_observed_at'] = observed_status['observed_at']
+                    entry['status_scope'] = 'Last dated event observation only; current roster designation unavailable. Exact change/injury time and prognosis unknown.'
+                else:
+                    entry['current_status'] = observed_status['current_snapshot_status']
+                    entry['status_scope'] = 'Current league snapshot designation; older queued event observations do not override it. Exact update time and prognosis unknown.'
             pro_team = getattr(player,'proTeam',None)
             entry['nfl_team'] = pro_team
             if pro_team in context.get('nfl_games',{}):
@@ -338,7 +474,7 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
             compact.append([entry['id'],entry['name'],entry['position'],slot,entry['points'],entry['projected_points'],
                             entry.get('current_status'),pro_team])
             # Detailed entries prioritize involved players; surrounding rosters stay complete above.
-            entry['_priority'] = (normalized(name) in normalized(report),
+            entry['_priority'] = (str(entry['id']) in affected_players or normalized(name) in normalized(report),
                                   slot not in (None,'BE','IR','BN') and entry.get('game',{}).get('state') in ('pre','in'),
                                   slot not in (None,'BE','IR','BN') and entry.get('current_status') in ('OUT','DOUBTFUL','QUESTIONABLE'),
                                   slot not in (None,'BE','IR','BN'),entry['points'] or 0)
@@ -379,8 +515,8 @@ def build_context(league, report, report_type, week=None, box_scores=None, trade
                 entry.pop('_priority',None)
                 context['players'].append(entry)
     # Named transaction players always lead the detail packet.
-    if report_type in ('get_trade_report','get_waiver_report'):
-        context['players'].sort(key=lambda e:normalized(e['name']) not in normalized(report))
+    if report_type in ('get_trade_report','get_waiver_report','get_league_updates'):
+        context['players'].sort(key=lambda e:(str(e['id']) not in affected_players, normalized(e['name']) not in normalized(report)))
     context['omitted_player_count'] = len(all_entries)-len(context['players'])
     try:
         completed_weeks = {str(e['id']):week if historical or e.get('game',{}).get('completed') else max(0,week-1)

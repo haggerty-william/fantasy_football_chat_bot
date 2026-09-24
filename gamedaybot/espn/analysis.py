@@ -36,6 +36,7 @@ REPORT_CONTEXT = {
     'get_trophies': 'Explain what made a supplied award performance unusual or decisive using verified scoring, usage or lineup evidence. The award card already names the recipient; add the football reason and a specific playful jab without inventing other results.',
     'get_waiver_report': 'Judge the fit and opportunity cost of the listed moves: verified role, positional need, available replacements, and bid only if provided. Use find_available_replacements or get_waiver_return when relevant. Explain the management bet instead of retelling the transaction list.',
     'get_trade_report': 'Judge the completed trades, predict the effect on BOTH starting lineups or positional depth, and roast bad value using supplied evidence. The exchange is already displayed; lead with the verdict and its football reason.',
+    'get_league_updates': 'Explain the fantasy implications of the supplied observed events, not the alert list again. Focus on affected teams and players. Injury designations are observations, not diagnoses or recovery forecasts. Use verified depth, workload, future opponents or available replacements to explain exposure. For an open proposed trade, give a tentative value/fit verdict and a conditional lineup or depth implication for BOTH teams. Use evaluate_trade_proposal when all player legs are known and a numerical projection comparison would help; do not replace useful trade analysis with repeated pending disclaimers. Accepted awaiting processing is still not a transfer, and closed offers are not actionable. For executed roster moves explain the management bet and use supplied manager names. Never manufacture a completed trade from an offer or its disappearance.',
 }
 EDITORIAL_REMINDER = ('The reader already has the report/table. Add an evidence-backed explanation or consequence, '
                       'not a prose version of the rows. Pick the strongest insight; omit generic filler.')
@@ -85,6 +86,20 @@ citations, citation markers, URLs, a bibliography, a sources section, or citatio
 Mention the publication date if timing matters. Status UNKNOWN or missing is not healthy.
 Current status is observed at fetch time; its update time is unknown. Historical
 stats are only for report_week. Never explain historical results with today's news.
+Observed league updates are under each team's observed_events, with shared event
+metadata in observed_event_index. These are authoritative observations from bot scans:
+observed_at is NOT the exact time an injury occurred or ESPN changed a designation.
+The earlier injury status is the previous observed designation, not a health diagnosis.
+Queued observations may be older than the current league snapshot. For present-tense
+status claims use current_snapshot_status or fresher player details, not an older
+event's status. When current designation is unknown, any last observed status must
+stay explicitly dated; do not call it a verified current designation.
+UNKNOWN is unknown, and a change to ACTIVE does not prove full health or full workload.
+Do not invent an injury mechanism, severity, recovery timetable or medical prognosis.
+For offers, proposed and accepted_awaiting_processing are conditional. A
+closed_without_verified_completion offer is not actionable; do not forecast it as
+about to execute. Never convert an expired, declined, vetoed or disappeared offer
+into a completed transfer. Only separately verified completed activity proves one.
 research_context.teams is keyed by exact fantasy team ID. Each team's single record
 contains its name, managers, rosters, player_details, history, trades and research.
 Cross-team facts and report text refer to those IDs; [team:ID] resolves to that record.
@@ -180,13 +195,15 @@ def inline_citations(commentary, context):
     return re.sub(r'\[(?:N\d+|\d+)\]', '', commentary).strip()
 
 
-def generate_analysis(report, report_type, timezone='America/New_York', week=None, league=None, box_scores=None, trade_actions=None):
+def generate_analysis(report, report_type, timezone='America/New_York', week=None, league=None, box_scores=None, trade_actions=None, event_facts=None):
     """Return labeled commentary, or an empty string without blocking a report.
 
     One local generation at a time, bounded research and correction requests.
     A busy or unavailable model never prevents the underlying report sending.
     """
     if report_type not in REPORT_CONTEXT or not has_sendable_content(report):
+        return ''
+    if report_type == 'get_league_updates' and (league is None or not event_facts):
         return ''
     if not str_to_bool(os.environ.get('AI_ANALYSIS', 'True')):
         return ''
@@ -215,11 +232,17 @@ def generate_analysis(report, report_type, timezone='America/New_York', week=Non
         if league is not None:
             try:
                 context = build_context(league, report, report_type, week, box_scores,
-                                        **({'trade_actions': trade_actions} if trade_actions is not None else {}))
+                                        **({'trade_actions': trade_actions} if trade_actions is not None else {}),
+                                        **({'event_facts': event_facts} if event_facts is not None else {}))
                 for index, article in enumerate(context.get('news', []), 1):
                     article['citation_id'] = f'N{index}'
             except Exception as error:
+                if event_facts is not None or report_type == 'get_league_updates':
+                    logger.warning('Event commentary omitted because authoritative event context is unavailable (%s)', type(error).__name__)
+                    return ''
                 logger.warning('Player research unavailable (%s); using report only', type(error).__name__)
+        if event_facts is not None and not (context and context.get('event_facts')):
+            return ''
         base_url = os.environ.get('AI_BASE_URL', DEFAULT_BASE_URL).strip().rstrip('/')
         # No hosted-provider fallback or inherited OpenAI credentials.
         instructions = INSTRUCTIONS
@@ -255,6 +278,11 @@ a bad trade just to roast someone. No headings, links, sources list, or citation
         if context and context.get('trade_sides'):
             packet.data['trade_writing_reminder'] = ('Call simulate_trade_impact before judging this trade. '
                 'Each team record lists exactly what it sent and received. Forecast both teams; do not retell the exchange.')
+        if context and context.get('event_facts'):
+            packet.data['event_writing_reminder'] = ('Use each team\'s observed_events and the observed_event_index. '
+                'Explain practical fantasy consequences. The scan timestamp is not an exact injury/update time. '
+                'Pending offers are conditional, accepted does not mean transferred, and closed offers are not actionable. '
+                'Use manager names when evaluating actual or proposed management decisions.')
         payload = {
             'model': model,
             'messages': [

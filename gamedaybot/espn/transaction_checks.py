@@ -38,6 +38,9 @@ def _identity(context):
         for row in roster.get('players', []) or []:
             if isinstance(row, (list, tuple)) and len(row) > 1 and row[0] is not None:
                 players.setdefault(str(row[0]), _clean(row[1]))
+    for event in _records(context.get('event_facts')):
+        if event.get('kind') == 'injury_status' and event.get('player_id') is not None:
+            players[str(event['player_id'])] = _clean(event.get('player_name'))
     aliases = {alias: next(iter(ids)) for alias, ids in candidates.items() if len(ids) == 1}
     return teams, aliases, players
 
@@ -48,6 +51,9 @@ def _trade_rows(context):
     pending = _records(awareness.get('pending', {}).get('trades')) if isinstance(awareness.get('pending'), dict) else []
     completed = _records(awareness.get('recent_completed', {}).get('trades')) if isinstance(awareness.get('recent_completed'), dict) else []
     hypothetical = []
+    for event in _records(context.get('event_facts')):
+        if event.get('kind') == 'trade_proposal' and isinstance(event.get('trade'), dict):
+            pending.append(event['trade'])
     for evidence in _records(context.get('tool_evidence')):
         result = evidence.get('result')
         if not isinstance(result, dict) or 'error' in result:
@@ -156,6 +162,7 @@ def check_transaction_claims(text, context):
     teams, aliases, players = _identity(context)
     pending_rows, completed_rows, hypothetical_rows = _trade_rows(context)
     pending = _legs(pending_rows, players)
+    closed = _legs([row for row in pending_rows if row.get('state') == 'closed_without_verified_completion'], players)
     completed = _legs([row for row in completed_rows if row.get('completed') is True], players)
     hypothetical = set()
     for row in hypothetical_rows:
@@ -182,6 +189,16 @@ def check_transaction_claims(text, context):
                  'sent': r'sent|shipped|gave up|traded away|traded'}
     problems = set()
     for clause in _clauses(_clean(text), [*aliases, *player_aliases]):
+        # A closed offer may be discussed in hindsight or as a newly proposed
+        # scenario, but its old legs do not establish an upcoming transfer.
+        if not re.search(r'\b(?:if|unless|reopened|hypothetical|new offer|not|never)\b', clause, re.I):
+            for match in re.finditer('(' + subjects + r')\s+(?:will|is going to)\s+(receive|get|acquire|send|give up)\s+', clause, re.I):
+                tid = aliases.get(match.group(1).casefold())
+                direction = 'sent' if match.group(2).casefold() in ('send', 'give up') else 'received'
+                for player in re.finditer(player_pattern, clause[match.end():], re.I):
+                    key = (tid, player_aliases[player.group().casefold()], direction)
+                    if key in closed and key not in completed:
+                        problems.add('closed_trade_as_actionable')
         if _qualified(clause):
             continue
         for direction, verbs in transfers.items():
@@ -210,4 +227,30 @@ def check_transaction_claims(text, context):
             if (_game_result(match.group(2).casefold(), clause[match.end():], subjects)
                     and any(tid in future.get(week, set()) for week in weeks)):
                 problems.add('future_matchup_as_completed')
+    # Event observations remain authoritative even when optional player detail
+    # has been pruned or the later pending/current snapshot no longer has it.
+    injury_events = {}
+    for event in _records(context.get('event_facts')):
+        if event.get('kind') != 'injury_status' or not isinstance(event.get('player_name'), str):
+            continue
+        pid = str(event.get('player_id'))
+        current = injury_events.get(pid)
+        if current is None or str(event.get('observed_at', '')) > str(current.get('observed_at', '')):
+            injury_events[pid] = event
+    clean = _clean(text)
+    for event in injury_events.values():
+        name = re.escape(_clean(event['player_name']))
+        assertion = re.search(name + r'\s+(?:is|remains|is listed|has been ruled)\s+(?:officially\s+)?'
+                              r'(out|questionable|doubtful|probable|inactive|active|unknown|PUP|non[-_ ]football[-_ ]injury|non[-_ ]football[-_ ]illness)\b', clean, re.I)
+        observed_fallback = event.get('current_snapshot_status')
+        if observed_fallback in (None, 'UNKNOWN'):
+            observed_fallback = event.get('status')
+        current_status = next((row.get('current_status') for row in _records(context.get('players'))
+                               if str(row.get('id')) == str(event.get('player_id')) and row.get('current_status')), observed_fallback)
+        if assertion and re.sub(r'[- ]', '_', assertion.group(1).upper()) != current_status:
+            problems.add('observed_status_mismatch')
+        if re.search(name + r'\s+(?:is|remains|looks)\s+(?:now\s+)?(?:healthy|fully fit|at full strength|cleared to play)\b', clean, re.I):
+            problems.add('unsupported_health_inference')
+        if re.search(name + r'\s+will\s+(?:recover|heal|return to full health|be healthy)\b', clean, re.I):
+            problems.add('unsupported_medical_prognosis')
     return sorted(problems)

@@ -78,6 +78,20 @@ def test_first_run_does_not_reannounce_old_trades(tmp_path,monkeypatch):
     discord.send_message.assert_not_called()
 
 
+def test_expired_shared_analysis_budget_still_delivers_trade_once(tmp_path, monkeypatch):
+    monkeypatch.setenv('TRADE_STATE_PATH', str(tmp_path/'ledger.sqlite'))
+    monkeypatch.setattr(notifications.time, 'time', lambda: 1)
+    league = Obj(teams=[], scoringPeriodId=2, recent_activity=Mock(return_value=[activity()]))
+    analysis = Mock()
+    monkeypatch.setattr(notifications, 'generate_analysis', analysis)
+    discord = Mock()
+    data = {'league_id': 123, 'year': 2026, 'discord_webhook_url': 'https://discord.test/hook', 'my_timezone': 'UTC'}
+    notifications.poll_trades(league, data, discord, analysis_deadline=0)
+    notifications.poll_trades(league, data, discord, analysis_deadline=0)
+    discord.send_message.assert_called_once()
+    analysis.assert_not_called()
+
+
 def test_trades_command_is_read_only_and_supports_empty_history(monkeypatch):
     from gamedaybot.espn import command_reports as reports
     monkeypatch.setattr(reports,'get_env_vars',lambda **k:{'league_id':123,'year':2026,'swid':'{1}','espn_s2':'1','my_timezone':'UTC'})

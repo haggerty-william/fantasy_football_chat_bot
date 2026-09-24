@@ -80,7 +80,7 @@ class AnalysisPacket:
 
     def _context(self):
         excluded = {'fantasy_teams', 'rosters', 'players', 'league_history', 'trade_sides',
-                    'current_roster_depth', 'highlights', 'tool_evidence'}
+                    'current_roster_depth', 'highlights', 'tool_evidence', 'event_facts'}
         data = self.references({k: v for k, v in self.source.items() if k not in excluded})
         data['teams'] = self.teams
         data['manager_scope'] = self.source.get('manager_scope',
@@ -107,6 +107,33 @@ class AnalysisPacket:
                 self.teams[tid]['history'] = detail
             else:
                 data['league_history'].setdefault('unassigned_teams', []).append(self.references(row))
+        for event in self.source.get('event_facts', []):
+            metadata = {key: event[key] for key in ('id', 'kind', 'observed_at')}
+            detail = event.get('trade', event.get('transaction'))
+            if detail is None:
+                tid = str(event.get('team_id'))
+                body = {key: value for key, value in event.items() if key not in ('id', 'kind', 'observed_at', 'team', 'team_id')}
+                if tid in self.teams:
+                    self.teams[tid].setdefault('observed_events', []).append(self.references({'event_id': event['id'], **body}))
+                    self.player_teams[str(event.get('player_id'))] = tid
+                else:
+                    raise ValueError('Observed event has no canonical team.')
+            else:
+                metadata.update({key: value for key, value in detail.items() if key not in ('items', 'team_ids')})
+                metadata['team_ids'] = list(detail['team_ids'])
+                for tid in detail['team_ids']:
+                    if tid not in self.teams:
+                        raise ValueError('Observed transaction has no canonical team.')
+                    evidence = {'event_id': event['id'], 'items': []}
+                    for item in detail['items']:
+                        if tid not in (item.get('from_team_id'), item.get('to_team_id')):
+                            continue
+                        leg = dict(item)
+                        leg['direction'] = ('retained_or_moved' if item.get('from_team_id') == item.get('to_team_id') else
+                                            'sent' if item.get('from_team_id') == tid else 'received')
+                        evidence['items'].append(leg)
+                    self.teams[tid].setdefault('observed_events', []).append(self.references(evidence))
+            data.setdefault('observed_event_index', {})[event['id']] = self.references(metadata)
         if not self.source:
             data['limitations'] = ['Detailed research unavailable. Team identities are supplied independently; use only the report for statistics.']
         return data

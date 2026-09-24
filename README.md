@@ -133,21 +133,27 @@ to `END_DATE`, and the bot goes quiet once the league's matchup periods are over
 | Power Rankings | Tue | 6:30 PM local | Two-step dominance rankings with week-over-week movement |
 | Standings | Wed | 7:30 AM local | Current standings |
 | Waiver Report | Wed | 7:31 AM local | Every add/drop from the day, with FAAB bids and the outbid rival in FAAB leagues |
-| Trade Report | Daily | 7:35 AM local | Previous calendar day's completed player trades, showing the sending and receiving teams; silent on quiet days |
+| League updates + completed trades | Daily | Startup and the top of each hour | New observed injury designations, visible trade proposals/status changes, completed waiver/free-agent adds/drops and completed trades; silent when unchanged |
 | Matchups + projections | Thu | 7:30 PM ET | Next week's matchups with records |
 
 Optional: `DAILY_WAIVER` moves the Waiver Report to a daily send, and `MONITOR_REPORT`
 (on by default) controls the Sunday Players to Monitor message.
 
-`TRADE_REPORT` (on by default) controls the daily trade report. It uses `TIMEZONE`
-for the entire previous calendar day, including evening trades, and pages through
-ESPN's trade activity so busy days aren't limited to the latest 25 events.
-It reports completed player trades, not proposals, vetoes, draft picks, or FAAB.
-Update dependencies when upgrading: this feature requires `espn_api>=0.46.0`.
-The process must be running at the scheduled time; missed days are not replayed
-automatically. For a manual historical report, call
-`gamedaybot.espn.trades.get_trade_report(league, report_date=date(2026, 9, 20))`
-with a `datetime.date` and your ESPN league object.
+`LEAGUE_UPDATES=True` checks for changes hourly. Each source starts with a quiet
+baseline, then reports changes since its last successful check. Injury designations
+cover starters, bench and IR; a removed designation does not prove full health.
+Trade proposals are limited to the configured ESPN account's visibility, and an
+offer disappearing is not proof of acceptance, rejection or completion.
+
+Source snapshots, pending updates and delivery reservations persist beside the
+existing completed-trade ledger in `TRADE_STATE_PATH`. Unchanged scans post nothing;
+ambiguous sends are not retried, preventing duplicate automatic notifications at
+the cost of a potentially missed notice. Source outages preserve their checkpoints.
+Facts are grouped before Graham's and Rex's separate commentary posts, with the
+configured model in each commentary footer. If local analysis is unavailable, the
+facts still send. `TRADE_REPORT` independently controls completed-trade announcements;
+with `LEAGUE_UPDATES=False`, it retains the hourly completed-trade-only schedule.
+See [Discord setup and delivery details](deployment/DISCORD.md#hourly-league-updates).
 
 The managed schedule - including the daily Waiver Report and the Elite chart messages -
 is at [gamedaybot.com/message-schedule](https://www.gamedaybot.com/message-schedule/).
@@ -175,7 +181,8 @@ debate personality, receives Graham's checked response and the same evidence, th
 adds a pointed reaction that can address Graham by name. Both are fictional
 announcers using your configured local model sequentially. After the report,
 Discord sends Graham's purple commentary card first and Rex's orange response in
-a separate message. Their names identify the speakers; AI disclosure stays in the footer.
+a separate message. Their names identify the speakers; the footer shows the configured
+model name, for example `GameDayBot • Gemma 4 12B QAT`.
 If the second voice fails or cannot add a supported angle, the analyst still sends.
 `AI_SECOND_COMMENTATOR=False` returns to the analyst alone. There is no
 OpenAI service integration, API key requirement, or paid-provider fallback.
@@ -469,7 +476,9 @@ the rest have defaults.
 | `ESPN_S2` | Private leagues | - | ESPN cookie |
 | `SWID` | Private leagues | - | ESPN cookie |
 | `MONITOR_REPORT` | No | `True` | Sunday morning Players to Monitor message |
-| `TRADE_REPORT` | No | `True` | Daily completed player-trade report at 7:35 AM local, covering yesterday |
+| `LEAGUE_UPDATES` | No | `True` | Startup/hourly injury-designation, visible proposal and completed roster-move updates |
+| `TRADE_REPORT` | No | `True` | Startup/hourly completed-trade announcements, alongside league updates or alone when they are disabled |
+| `TRADE_STATE_PATH` | No | `data/trades.sqlite3` | Persistent SQLite source snapshots, queued league changes and notification ledgers; Minikube uses its existing PVC |
 | `AI_BASE_URL` | No | `http://localhost:1234/v1` | Local LM Studio server; use the host address from Minikube |
 | `AI_ANALYSIS` | No | `True` | Set to `False` to disable local commentary |
 | `AI_MODEL` | For AI analysis | Unset | Exact local chat model identifier; unset disables generation |

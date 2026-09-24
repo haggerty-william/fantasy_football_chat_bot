@@ -33,6 +33,7 @@ def get_env_vars(require_chat=True):
 
     data['daily_waiver'] = daily_waiver
     data['trade_report'] = utils.str_to_bool(os.environ.get('TRADE_REPORT', 'True'))
+    data['league_updates'] = utils.str_to_bool(os.environ.get('LEAGUE_UPDATES', 'True'))
 
     try:
         monitor_report = utils.str_to_bool(os.environ["MONITOR_REPORT"])

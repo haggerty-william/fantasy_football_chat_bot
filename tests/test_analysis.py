@@ -48,7 +48,9 @@ def test_snapshot_and_context_are_sent_without_credentials(api):
     assert api.call_count == 1
 
 
-@pytest.mark.parametrize('report_type', list(REPORT_CONTEXT))
+# Event reports require their structured observation evidence and deliberately
+# skip commentary if that evidence cannot be built (covered in event tests).
+@pytest.mark.parametrize('report_type', [kind for kind in REPORT_CONTEXT if kind != 'get_league_updates'])
 @pytest.mark.parametrize('research_fails', [False, True])
 def test_every_ai_report_keeps_manager_identity_even_when_research_fails(api, monkeypatch, report_type, research_fails):
     from gamedaybot.espn import analysis
@@ -178,7 +180,7 @@ def test_commentary_has_its_own_discord_card(api):
     text = REPORT + '\n\n' + generate_analysis(REPORT, 'get_scoreboard_short')
     embeds = [e for p in build_payloads(text) for e in p['embeds']]
     assert embeds[-1]['title'] == 'Graham Ellis'
-    assert embeds[-1]['footer']['text'] == 'GameDayBot • AI commentary'
+    assert embeds[-1]['footer']['text'] == 'GameDayBot • Qwen3.6 35B A3B'
     assert embeds[0]['title'] == '🏈 Scoreboard'
 
 

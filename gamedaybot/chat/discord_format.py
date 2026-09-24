@@ -1,5 +1,6 @@
 """Discord presentation, independent of the shared plain-text reports."""
 
+import os
 import re
 from urllib.parse import urlsplit
 from .team_labels import team_label
@@ -85,6 +86,10 @@ def team_sections(title, table, lines, teams):
 
 # Source heading, display heading, accent color, preserve numeric columns.
 STYLES = {
+    'League activity': ('📰 League activity', 0x3498DB, False),
+    'Trade proposal updates': ('🤝 Trade proposals', 0x1ABC9C, False),
+    'Injury status changes': ('🚑 Injury updates', 0xE67E22, False),
+    'Roster moves': ('📋 Roster moves', 0x3498DB, False),
     'Data Highlights': ('Verified data highlights', 0x3498DB, False),
     'Rivalry preview': ('🔥 Rivalry of the week', 0xE67E22, False),
     'Monday night watch': ('🏈 Monday night watch', 0xE67E22, False),
@@ -193,10 +198,24 @@ def chunks(text, limit=3800):
         yield text
 
 
+def model_label(model):
+    """Turn the configured inference ID into a compact, recognizable model name."""
+    name = re.sub(r'\.gguf$', '', model.strip().rsplit('/', 1)[-1], flags=re.I)
+    words = re.split(r'[-\s]+', name)
+    acronyms = {'qat', 'gguf', 'nvidia'}
+    def display(word):
+        if word.casefold() in acronyms or re.fullmatch(r'(?:\d+(?:\.\d+)?b|a\d+b|[iq]q?\d[\w.]*)', word, re.I):
+            return word.upper()
+        return word[:1].upper() + word[1:]
+    return ' '.join(display(word) for word in words if word)[:160] or 'Local model'
+
+
 def build_payloads(text, teams=None):
     """Yield webhook payloads within individual and aggregate embed limits."""
     teams = teams if teams is not None else getattr(text, 'teams', [])
     teams = list(teams or [])
+    # Both announcers use this same explicitly selected model; no model fallback.
+    commentary_footer = 'GameDayBot • ' + model_label(os.environ.get('AI_MODEL', ''))
     sections = []
     title, color, table = ('🏈 League update', 0x3498DB, False)
     lines = []
@@ -289,7 +308,7 @@ def build_payloads(text, teams=None):
             embed = {
                 'title': title + suffix,
                 'color': color,
-                'footer': {'text': 'GameDayBot • AI commentary' if title in (STYLES['AI Analysis'][0], STYLES['AI Hot Take'][0])
+                'footer': {'text': commentary_footer if title in (STYLES['AI Analysis'][0], STYLES['AI Hot Take'][0])
                            else 'GameDayBot • ESPN Fantasy'},
             }
             if part.strip():

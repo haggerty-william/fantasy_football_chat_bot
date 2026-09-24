@@ -46,7 +46,11 @@ def scheduler():
                   day_of_week='wed', hour=7, minute=30, start_date=ff_start_date, end_date=ff_end_date,
                   timezone=my_timezone, replace_existing=True)
     waiver_days = '*' if data['daily_waiver'] else 'wed'
-    if data['trade_report']:
+    if data['league_updates']:
+        sched.add_job(espn_bot, 'cron', ['get_league_updates'], id='league_updates',
+                      minute=0, next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True,
+                      timezone=my_timezone, replace_existing=True)
+    elif data['trade_report']:
         sched.add_job(espn_bot, 'cron', ['get_trade_updates'], id='trade_report',
                       minute=0, next_run_time=datetime.now(timezone.utc), max_instances=1, coalesce=True,
                       timezone=my_timezone, replace_existing=True)

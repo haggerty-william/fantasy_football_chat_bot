@@ -9,6 +9,7 @@ import time
 
 from gamedaybot.espn.trades import completed_trades, format_trade
 from gamedaybot.espn.analysis import generate_analysis
+from gamedaybot.espn.analysis_limits import analysis_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,7 @@ class TradeLedger:
         self.db.close()
 
 
-def poll_trades(league, data, discord):
+def poll_trades(league, data, discord, analysis_deadline=None):
     url = str(data.get('discord_webhook_url', ''))
     if url in ('', '1'):
         return
@@ -52,9 +53,11 @@ def poll_trades(league, data, discord):
             if ledger.known(scope, trade['id']):
                 continue
             text = format_trade(trade, data['my_timezone'])
-            analysis = generate_analysis(text, 'get_trade_report', timezone=data['my_timezone'],
-                                         week=getattr(league,'scoringPeriodId',None), league=league,
-                                         trade_actions=trade['actions'])
+            analysis = ''
+            if analysis_deadline is None or time.monotonic() + analysis_timeout() <= analysis_deadline:
+                analysis = generate_analysis(text, 'get_trade_report', timezone=data['my_timezone'],
+                                             week=getattr(league,'scoringPeriodId',None), league=league,
+                                             trade_actions=trade['actions'])
             if analysis:
                 text += '\n\n' + analysis
             # Reserve before sending: webhooks cannot guarantee exactly-once

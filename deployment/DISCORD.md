@@ -98,25 +98,45 @@ The optional environment variables are `DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID`,
 and `DISCORD_COMMAND_CHANNEL_ID`. Without a token, scheduled reports continue and
 commands remain disabled. Updating the Secret requires a pod restart.
 
-## Hourly trade announcements
+## Hourly league updates
 
-When `TRADE_REPORT=True` (default), the bot checks at startup and at the top of
-every hour, replacing the previous daily report. It reports completed trades,
-not pending proposals. Detection can take up to an hour plus ESPN's update delay.
-The first run establishes a watch from activation time rather than reposting old
-trades. `/trades` remains available to look up those older deals and does not change
-the automatic announcement ledger.
+With `LEAGUE_UPDATES=True` (default), one job checks at startup and the top of each
+hour for rostered players' injury-designation changes, new visible trade proposals
+and explicit proposal-status changes, and completed waiver/free-agent adds and drops.
+Starters, bench and IR players are all included. Unknown statuses are skipped;
+removing an injury designation does not establish full health or participation.
+Proposals are limited to what the configured ESPN account can see. A disappearing
+offer is never treated as declined, accepted or completed.
 
-`TRADE_STATE_PATH` points to a SQLite ledger on the `fantasy-football-trade-state`
-PVC mounted at `/var/lib/gamedaybot`. Keep this PVC across upgrades. Identity uses
-trade timestamps and stable team/player IDs; changing team names does not cause
-reposts. Keep one replica and the Recreate rollout strategy.
+Each new source establishes a quiet baseline instead of announcing old activity.
+Later successful checks queue changes durably; source failures preserve that source's
+checkpoint without preventing other sources from reporting. No changes means no post.
+Verified facts are grouped into readable cards, followed by Graham Ellis and then Rex
+Callahan in separate messages with model-name footers. If analysis is unavailable,
+the factual report still sends. Detection can take up to an hour plus ESPN's delay.
 
-The bot reserves each trade before sending to prioritize no duplicate automatic
-announcements. A crash or ambiguous send timeout can therefore leave a trade
-unannounced: `claimed`/`uncertain` entries are never automatically retried, because
-Discord webhooks do not provide durable exactly-once delivery. Errors are logged;
-the trade can still be viewed on demand with `/trades`. Do not delete the ledger
+The same job retains completed-trade polling and its existing delivery ledger when
+`TRADE_REPORT=True`. Set `LEAGUE_UPDATES=False` to keep only that hourly completed-trade
+schedule. Its first activation starts a watch without reposting historical trades.
+`/trades` still retrieves older completed deals without changing automatic delivery state.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `LEAGUE_UPDATES` | `True` | Startup/hourly injury, visible proposal and completed roster-move changes |
+| `TRADE_REPORT` | `True` | Completed-trade announcements within the hourly job, or alone if league updates are disabled |
+| `TRADE_STATE_PATH` | `data/trades.sqlite3` | SQLite snapshots, queued updates and delivery ledgers; deployment points it at `/var/lib/gamedaybot/trades.sqlite3` |
+
+`TRADE_STATE_PATH` points to SQLite state on the `fantasy-football-trade-state`
+PVC mounted at `/var/lib/gamedaybot`. Keep this PVC across upgrades. Event identity
+uses stable source/player IDs and status revisions; changing team names does not
+cause reposts. Keep one replica and the Recreate rollout strategy.
+
+The bot reserves each update batch or completed trade before sending to prevent
+duplicate automatic announcements. A crash or ambiguous send timeout can therefore
+leave a notice unannounced or partly delivered: `claimed`/`uncertain` entries are never
+automatically retried, because Discord webhooks do not provide durable exactly-once
+delivery. Errors are logged; completed trades can still be viewed with `/trades`.
+Do not delete the ledger
 to resolve a delivery issue. Its scope includes the league, season and destination.
 
 Trade analysis now judges the deal, gives a tentative winner/loser and predicts
@@ -237,8 +257,8 @@ receives Graham's validated response and the same structured packet. Both are fi
 announcers; Rex adds pointed management banter and uncertain forecasts and can address
 Graham by name. Both use `AI_MODEL`; they do not require two loaded models. After the
 report, Discord sends Graham's card first and Rex's response in a separate message,
-within Discord's message limits. Speaker headings use their names, with AI disclosure
-only in the footer. If the second voice
+within Discord's message limits. Speaker headings use their names; the footer shows
+the configured model name, for example `GameDayBot • Gemma 4 12B QAT`. If the second voice
 fails validation, times out or repeats the analyst, the analyst still sends.
 Set `AI_SECOND_COMMENTATOR=False` to use only the analyst.
 

@@ -34,6 +34,8 @@ spec:
         env:
         - name: TRADE_STATE_PATH
           value: /var/lib/gamedaybot/trades.sqlite3
+        - name: LEAGUE_UPDATES
+          value: "True"
         - name: AI_BASE_URL
           value: "http://host.docker.internal:1234/v1"
         - name: AI_MODEL

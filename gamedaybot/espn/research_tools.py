@@ -68,6 +68,13 @@ class ResearchTools:
         self.week, self.box_scores, self.deadline = week, box_scores, deadline
         self.allowed = {str(p['id']) for p in context.get('players', []) if p.get('id') is not None}
         self.allowed.update(str(row[0]) for r in context.get('rosters', []) for row in r['players'] if row[0] is not None)
+        # Authoritative hourly events can reference players omitted from the
+        # compact roster or recently dropped. Their IDs remain researchable.
+        for event in context.get('event_facts', []):
+            if event.get('kind') == 'injury_status':
+                self.allowed.update(verified_result_player_ids({'players': [event]}))
+            else:
+                self.allowed.update(verified_result_player_ids(event.get('trade', event.get('transaction', {}))))
         self.cache = {}
         self.calls = 0
         self.rounds = 0

@@ -170,6 +170,10 @@ def espn_bot(function):
     if function == 'get_trade_updates':
         poll_trades(league, data, discord_bot)
         return
+    if function == 'get_league_updates':
+        from gamedaybot.espn.league_updates import poll_league_updates
+        poll_league_updates(league, data, discord_bot)
+        return
 
     try:
         broadcast_message = data['broadcast_message']
